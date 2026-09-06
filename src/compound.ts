@@ -222,10 +222,11 @@ export function createCompound(): {
       tree.receiveShadow = true;
       group.add(tree);
     }
-    box(28.1, 0.45, z, 3.4, 0.2, 0.65, materials.stone);
+    // Seating backs onto the civic plinths, clear of the court approaches.
+    box(28.1, 0.45, z + 1.25, 3.4, 0.2, 0.65, materials.stone);
     for (const x of [26.8, 29.4])
-      box(x, 0.2, z, 0.25, 0.4, 0.5, materials.dark);
-    collisions.push({ x: 28.1, z, w: 3.4, d: 0.65 });
+      box(x, 0.2, z + 1.25, 0.25, 0.4, 0.5, materials.dark);
+    collisions.push({ x: 28.1, z: z + 1.25, w: 3.4, d: 0.65 });
   }
 
   function fence(x: number, z: number, length: number, alongX: boolean) {
