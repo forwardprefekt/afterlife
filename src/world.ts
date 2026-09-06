@@ -5,6 +5,7 @@ import {
   DISTRICT_ROADS,
   LANDMARKS,
   SCANNER_TRIANGLE,
+  STREET_POCKETS,
   insideDistrict,
   insideScanner,
 } from "./content";
@@ -106,6 +107,14 @@ export function createWorld(container: HTMLElement) {
     paint: 0x94a49a,
     red: 0x9b5145,
     skin: 0xb29980,
+    limestone: 0x999184,
+    clay: 0x887468,
+    oxidized: 0x557d74,
+    plaster: 0xa5a396,
+    leaf: 0x687e58,
+    soil: 0x4a4c3e,
+    fabric: 0xb59d76,
+    patch: 0x4b5b5c,
   };
   const mats = Object.fromEntries(
     Object.entries(palette).map(([name, color]) => [
@@ -172,6 +181,7 @@ export function createWorld(container: HTMLElement) {
     h: number,
     side = false,
     color = "#d9cba8",
+    owner?: { group: THREE.Group; materials: THREE.MeshStandardMaterial[] },
   ) {
     const canvas = document.createElement("canvas");
     canvas.width = 768;
@@ -189,13 +199,19 @@ export function createWorld(container: HTMLElement) {
     ctx.fillText(text, 384, 96, 700);
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
-    const mesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(w, h),
-      new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide }),
-    );
+    const material = owner
+      ? new THREE.MeshStandardMaterial({
+          map: texture,
+          side: THREE.DoubleSide,
+          roughness: 0.86,
+        })
+      : new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
+    if (material instanceof THREE.MeshStandardMaterial)
+      owner?.materials.push(material);
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), material);
     mesh.position.set(x, y, z);
     if (side) mesh.rotation.y = Math.PI / 2;
-    exterior.add(mesh);
+    (owner?.group ?? exterior).add(mesh);
     return mesh;
   }
   const b = DISTRICT_BOUNDS;
@@ -316,90 +332,472 @@ export function createWorld(container: HTMLElement) {
         )
       )
         continue;
-      for (const side of [-1, 1])
+      for (const side of [-1, 1]) {
+        const dashX = x + (vertical ? side * 1.35 : 0),
+          dashZ = z + (vertical ? 0 : side * 1.35);
+        if (
+          STREET_POCKETS.some((pocket) =>
+            pocket.positions.some(
+              ([px, pz]) =>
+                Math.abs(dashX - px) < 1.2 && Math.abs(dashZ - pz) < 1.1,
+            ),
+          )
+        )
+          continue;
         box(
-          x + (vertical ? side * 1.35 : 0),
+          dashX,
           0.045,
-          z + (vertical ? 0 : side * 1.35),
+          dashZ,
           vertical ? 0.05 : 0.8,
           0.025,
           vertical ? 0.8 : 0.05,
           mats.paint,
         );
+      }
     }
   });
   for (const z of [-8, 0, 8])
     for (const x of [-1, 1])
       for (let i = -2; i <= 2; i++)
         box(x * 2, 0.045, z + i * 0.38, 0.6, 0.03, 0.18, mats.paint);
-  // Each building owns cloned materials so sightline fading includes its rooftop details.
+  // Authored massing stays inside the original ground footprints. Each block
+  // owns its finish materials, including attached repairs, planting and signs.
   function building(
     x: number,
     z: number,
     w: number,
     d: number,
     h: number,
-    number: string,
+    name: string,
+    profile: "setback" | "split" | "steps" | "slab",
+    finish: "concrete" | "limestone" | "clay" | "oxidized",
+    use: "homes" | "shop" | "service",
   ) {
     const group = new THREE.Group();
+    group.name = name;
     exterior.add(group);
-    const wall = mats.concrete.clone(),
+    const wall = mats[finish].clone(),
       roof = mats.roof.clone(),
       trim = mats.edge.clone(),
       window = lit.clone(),
-      dark = mats.dark.clone();
-    const materials = [wall, roof, trim, window, dark];
-    box(x, h / 2, z, w, h, d, wall, group);
+      dark = mats.dark.clone(),
+      repair = mats.plaster.clone(),
+      metal = mats.oxidized.clone(),
+      cloth = mats.fabric.clone(),
+      leaves = mats.leaf.clone(),
+      soil = mats.soil.clone();
+    const materials = [
+      wall,
+      roof,
+      trim,
+      window,
+      dark,
+      repair,
+      metal,
+      cloth,
+      leaves,
+      soil,
+    ];
+    const podium = 2.15;
+    // A recessed frontage behind two deep masonry piers, not a second shop box.
+    box(x, podium / 2, z - 0.2, w, podium, d - 0.4, wall, group);
+    for (const side of [-1, 1])
+      box(
+        x + side * (w / 2 - 0.24),
+        podium / 2,
+        z + d / 2 - 0.2,
+        0.48,
+        podium,
+        0.4,
+        wall,
+        group,
+      );
     box(x, 0.12, z, w + 0.25, 0.24, d + 0.25, trim, group);
-    box(x, h + 0.12, z, w + 0.25, 0.24, d + 0.25, trim, group);
-    box(x, h + 0.26, z, w - 0.3, 0.12, d - 0.3, roof, group);
-    for (let floor = 1; floor < h - 0.5; floor += 1.3) {
-      box(x, floor - 0.35, z + d / 2 + 0.015, w, 0.08, 0.1, dark, group);
-      for (let col = -w / 2 + 0.7; col < w / 2 - 0.3; col += 1.05)
+    box(x, podium + 0.08, z, w + 0.12, 0.16, d + 0.12, roof, group);
+    box(x, 1.08, z + d / 2 - 0.38, w - 0.96, 1.65, 0.06, dark, group);
+    if (use === "shop") {
+      const awning = box(
+        x - 0.1,
+        2.03,
+        z + d / 2 + 0.18,
+        w - 0.7,
+        0.09,
+        1.05,
+        cloth,
+        group,
+      );
+      awning.rotation.x = 0.12;
+      box(x - 0.1, 1.93, z + d / 2 + 0.69, w - 0.7, 0.22, 0.055, metal, group);
+      for (let slat = 0; slat < 6; slat++)
         box(
-          x + col,
-          floor,
-          z + d / 2 + 0.03,
-          0.52,
-          0.55,
-          0.05,
-          (Math.round((col + 10) * 10) + Math.round(floor)) % 3 === 0
-            ? dark
-            : window,
+          x + w * 0.15,
+          0.55 + slat * 0.18,
+          z + d / 2 - 0.33,
+          w * 0.35,
+          0.08,
+          0.04,
+          metal,
           group,
         );
-      for (let col = -d / 2 + 0.7; col < d / 2 - 0.3; col += 1.15)
-        box(x + w / 2 + 0.03, floor, z + col, 0.05, 0.5, 0.6, window, group);
+      box(
+        x - w * 0.23,
+        1.15,
+        z + d / 2 - 0.33,
+        w * 0.24,
+        0.65,
+        0.045,
+        window,
+        group,
+      );
+    } else {
+      box(x + 0.22, 0.92, z + d / 2 - 0.33, 0.58, 1.45, 0.05, metal, group);
+      box(
+        x - w * 0.25,
+        1.22,
+        z + d / 2 - 0.33,
+        0.46,
+        0.62,
+        0.05,
+        window,
+        group,
+      );
     }
-    box(x + 0.5, h + 0.62, z, 1.3, 0.7, 1, dark, group);
-    for (let i = -2; i <= 2; i++)
-      box(x + 0.5 + i * 0.2, h + 1, z, 0.06, 0.04, 0.8, trim, group);
-    tube(x - w / 3, h + 0.7, z - d / 4, 0.38, 1.2, dark, group);
-    box(x - w / 3, h + 1.34, z - d / 4, 0.85, 0.14, 0.85, trim, group);
-    box(x + w / 2 + 0.08, h / 2, z - d / 3, 0.14, h, 0.17, roof, group);
+    const masses =
+      profile === "split"
+        ? [
+            { x: x - w * 0.25, z: z - 0.12, w: w * 0.45, d: d - 0.4, top: h },
+            {
+              x: x + w * 0.26,
+              z: z + 0.08,
+              w: w * 0.42,
+              d: d - 0.65,
+              top: h - 0.7,
+            },
+          ]
+        : profile === "steps"
+          ? [
+              { x: x - w * 0.22, z: z - 0.2, w: w * 0.5, d: d - 0.45, top: h },
+              {
+                x: x + w * 0.26,
+                z: z + 0.16,
+                w: w * 0.45,
+                d: d - 0.8,
+                top: h - 1,
+              },
+            ]
+          : [
+              {
+                x: x + (profile === "setback" ? 0.22 : 0),
+                z: z - (profile === "setback" ? 0.35 : 0),
+                w: w - (profile === "setback" ? 0.85 : 0.2),
+                d: d - (profile === "setback" ? 1.05 : 0.2),
+                top: h,
+              },
+            ];
+    for (const mass of masses) {
+      box(
+        mass.x,
+        (mass.top + podium) / 2,
+        mass.z,
+        mass.w,
+        mass.top - podium,
+        mass.d,
+        wall,
+        group,
+      );
+      box(
+        mass.x,
+        mass.top + 0.08,
+        mass.z,
+        mass.w + 0.1,
+        0.16,
+        mass.d + 0.1,
+        trim,
+        group,
+      );
+      box(
+        mass.x,
+        mass.top + 0.19,
+        mass.z,
+        mass.w - 0.2,
+        0.06,
+        mass.d - 0.2,
+        roof,
+        group,
+      );
+      for (let floor = podium + 0.7; floor < mass.top - 0.3; floor += 1.25) {
+        for (
+          let col = -mass.w / 2 + 0.48;
+          col < mass.w / 2 - 0.25;
+          col += 0.96
+        ) {
+          box(
+            mass.x + col,
+            floor,
+            mass.z + mass.d / 2 + 0.025,
+            0.46,
+            0.58,
+            0.045,
+            Math.round(col * 10 + floor * 3) % 4 === 0 ? dark : window,
+            group,
+          );
+          box(
+            mass.x + col,
+            floor - 0.34,
+            mass.z + mass.d / 2 + 0.07,
+            0.59,
+            0.07,
+            0.15,
+            trim,
+            group,
+          );
+        }
+        for (let col = -mass.d / 2 + 0.5; col < mass.d / 2 - 0.25; col += 1.2)
+          box(
+            mass.x + mass.w / 2 + 0.025,
+            floor,
+            mass.z + col,
+            0.045,
+            0.53,
+            0.55,
+            dark,
+            group,
+          );
+      }
+      // Uneven roof membranes and a repaired corner break the repeated parapet.
+      box(
+        mass.x - mass.w * 0.18,
+        mass.top + 0.235,
+        mass.z + 0.12,
+        mass.w * 0.45,
+        0.025,
+        mass.d * 0.38,
+        metal,
+        group,
+      );
+      box(
+        mass.x + mass.w * 0.26,
+        mass.top - 0.38,
+        mass.z + mass.d / 2 + 0.03,
+        mass.w * 0.22,
+        0.48,
+        0.04,
+        repair,
+        group,
+      );
+    }
+    const high = masses[0];
+    if (use === "homes") {
+      tube(
+        high.x - high.w * 0.19,
+        h + 0.8,
+        high.z - 0.45,
+        0.48,
+        1.1,
+        metal,
+        group,
+      );
+      tube(
+        high.x - high.w * 0.19,
+        h + 1.38,
+        high.z - 0.45,
+        0.52,
+        0.08,
+        trim,
+        group,
+      );
+      box(
+        high.x + high.w * 0.2,
+        h + 0.4,
+        high.z + 0.4,
+        0.55,
+        0.34,
+        1.2,
+        trim,
+        group,
+      );
+      box(
+        high.x + high.w * 0.2,
+        h + 0.58,
+        high.z + 0.4,
+        0.45,
+        0.03,
+        1.05,
+        soil,
+        group,
+      );
+      for (let plant = 0; plant < 3; plant++)
+        box(
+          high.x + high.w * 0.2,
+          h + 0.73 + (plant % 2) * 0.09,
+          high.z + 0.04 + plant * 0.36,
+          0.39,
+          0.25 + (plant % 2) * 0.18,
+          0.28,
+          leaves,
+          group,
+        );
+      const lineZ = z + d / 2 + 0.23;
+      for (const side of [-1, 1])
+        box(
+          x + side * w * 0.34,
+          podium + 0.65,
+          lineZ,
+          0.04,
+          0.9,
+          0.04,
+          metal,
+          group,
+        );
+      box(x, podium + 1.03, lineZ, w * 0.68, 0.025, 0.025, dark, group);
+      for (let item = 0; item < 3; item++)
+        box(
+          x - w * 0.24 + item * w * 0.22,
+          podium + 0.76 - (item % 2) * 0.1,
+          lineZ,
+          w * 0.14,
+          0.44 + (item % 2) * 0.2,
+          0.025,
+          item === 1 ? metal : cloth,
+          group,
+        );
+    } else {
+      box(
+        high.x,
+        h + 0.52,
+        high.z - 0.15,
+        Math.min(1.15, high.w - 0.2),
+        0.58,
+        0.85,
+        dark,
+        group,
+      );
+      for (let vent = -2; vent <= 2; vent++)
+        box(
+          high.x + vent * 0.17,
+          h + 0.83,
+          high.z - 0.15,
+          0.045,
+          0.03,
+          0.7,
+          trim,
+          group,
+        );
+      tube(
+        high.x - high.w * 0.3,
+        h + 0.57,
+        high.z - high.d * 0.25,
+        0.16,
+        0.72,
+        metal,
+        group,
+      );
+    }
+    box(
+      x + w / 2 + 0.06,
+      podium / 2,
+      z - d * 0.3,
+      0.12,
+      podium,
+      0.12,
+      metal,
+      group,
+    );
+    box(
+      x + w / 2 + 0.028,
+      1.25,
+      z + d * 0.18,
+      0.045,
+      0.75,
+      d * 0.3,
+      repair,
+      group,
+    );
+    sign(
+      name,
+      x,
+      podium - 0.25,
+      z + d / 2 + 0.09,
+      Math.min(w - 0.3, 3),
+      0.42,
+      false,
+      "#d9cba8",
+      { group, materials },
+    );
     collisions.push({ x, z, w: w + 0.25, d: d + 0.25 });
     fadeGroups.push({
       group,
-      box: new THREE.Box3(
-        new THREE.Vector3(x - w / 2 - 0.2, 0, z - d / 2 - 0.2),
-        new THREE.Vector3(x + w / 2 + 0.2, h + 1.5, z + d / 2 + 0.2),
-      ),
+      box: new THREE.Box3().setFromObject(group),
       materials,
     });
-    sign(number, x, h - 0.6, z + d / 2 + 0.08, Math.min(w - 0.3, 3), 0.55);
+    return { group, materials };
   }
-  building(-5, 12.4, 5.3, 4.8, 8.7, "CAPSULES / H-09");
-  box(-7.72, 1, 12, 0.08, 2, 1.4, mats.dark);
-  box(-8.6, 2.1, 12, 2, 0.12, 2, mats.teal);
-  box(-8.6, 0.04, 12, 2.1, 0.08, 1.8, mats.edge);
-  sign("0806 / LEVEL 03", -7.8, 2.7, 12, 2.6, 0.55, true);
-  building(5.1, 12.5, 5.5, 4.7, 3.8, "RATIONS");
-  building(-5.1, 4.2, 5.2, 4.1, 4.3, "LABOR EXCHANGE");
-  building(5.6, 4.4, 4, 3.7, 4.8, "CREDIT AUTHORITY");
-  building(-6.5, -4.2, 2.8, 3.7, 3.4, "WATER / 04");
-  building(6.5, -4.3, 2.7, 3.6, 3.4, "LOGISTICS");
-  building(-5, -12.5, 5.1, 4.6, 5.1, "RECOGNITION");
-  building(5, -12, 4.7, 3.9, 4.5, "LICENSED ACCESS");
+  const capsules = building(
+    -5,
+    12.4,
+    5.3,
+    4.8,
+    8.7,
+    "CAPSULES / H-09",
+    "split",
+    "concrete",
+    "homes",
+  );
+  const entryDark = mats.dark.clone(),
+    entryMetal = mats.oxidized.clone();
+  capsules.materials.push(entryDark, entryMetal);
+  box(-7.72, 1, 12, 0.08, 2, 1.4, entryDark, capsules.group);
+  box(-8.6, 2.1, 12, 2, 0.12, 2, entryMetal, capsules.group);
+  box(-8.6, 0.035, 12, 2.1, 0.02, 1.8, mats.patch);
+  sign("0806 / LEVEL 03", -7.8, 2.7, 12, 2.6, 0.55, true, "#d9cba8", capsules);
+  fadeGroups[fadeGroups.length - 1].box.setFromObject(capsules.group);
+  building(5.1, 12.5, 5.5, 4.7, 3.8, "RATIONS", "setback", "limestone", "shop");
+  building(-5.1, 4.2, 5.2, 4.1, 4.3, "LABOR EXCHANGE", "steps", "clay", "shop");
+  building(
+    5.6,
+    4.4,
+    4,
+    3.7,
+    4.8,
+    "CREDIT AUTHORITY",
+    "slab",
+    "concrete",
+    "service",
+  );
+  building(
+    -6.5,
+    -4.2,
+    2.8,
+    3.7,
+    3.4,
+    "WATER / 04",
+    "setback",
+    "oxidized",
+    "service",
+  );
+  building(6.5, -4.3, 2.7, 3.6, 3.4, "LOGISTICS", "slab", "clay", "service");
+  building(
+    -5,
+    -12.5,
+    5.1,
+    4.6,
+    5.1,
+    "RECOGNITION",
+    "steps",
+    "limestone",
+    "service",
+  );
+  building(
+    5,
+    -12,
+    4.7,
+    3.9,
+    4.5,
+    "LICENSED ACCESS",
+    "setback",
+    "concrete",
+    "service",
+  );
   // The south concourse and eastern freight arm turn the original core into an L.
   const southNames = [
     "SHIFT HOUSING",
@@ -409,7 +807,17 @@ export function createWorld(container: HTMLElement) {
   ];
   for (let row = 0; row < 4; row++) {
     const z = 20 + row * 8;
-    building(-5, z, 5.2, 4.8, 4.4 + (row % 2) * 1.5, southNames[row]);
+    building(
+      -5,
+      z,
+      5.2,
+      4.8,
+      [4.4, 5.9, 4.8, 6.2][row],
+      southNames[row],
+      (["setback", "steps", "slab", "split"] as const)[row],
+      (["limestone", "oxidized", "clay", "concrete"] as const)[row],
+      row === 1 ? "shop" : "homes",
+    );
     building(
       5,
       z,
@@ -417,6 +825,9 @@ export function createWorld(container: HTMLElement) {
       4.8,
       3.6 + (row % 3) * 1.2,
       row === 3 ? "PLATFORM / 09" : "LICENSED LABOR",
+      (["steps", "setback", "split", "slab"] as const)[row],
+      (["clay", "concrete", "limestone", "oxidized"] as const)[row],
+      row === 3 ? "service" : row === 1 ? "shop" : "homes",
     );
   }
   // An open, continuous custody-vehicle lane runs down X=13.7.
@@ -434,15 +845,166 @@ export function createWorld(container: HTMLElement) {
     box(-11.9, 1.34, z, 1.35, 0.12, 1.35, mats.edge);
     collisions.push({ x: -11.9, z, w: 1.35, d: 1.35 });
   }
-  // A tired tram shelter and owner-only cargo gantry give the new arms landmarks.
-  box(-1.8, 0.08, 40, 1.4, 0.16, 5, mats.edge);
-  for (const z of [38, 42]) {
-    box(-1.8, 1.4, z, 0.12, 2.8, 0.12, mats.dark);
-    collisions.push({ x: -1.8, z, w: 0.12, d: 0.12 });
+  // Repaired public paving sits below contact shadows (0.065) and the scanner.
+  // These are surface repairs, never raised obstacles or a second road surface.
+  for (const [x, z, w, d] of [
+    [-9.2, 10.6, 1.15, 0.65],
+    [-10.15, 5.3, 0.9, 1.5],
+    [-5.8, 8.6, 1.3, 0.42],
+    [2.6, 9.2, 1.05, 0.58],
+    [-9.4, 24.5, 0.75, 1.65],
+    [-2.2, 31.5, 0.8, 1.1],
+    [6.8, 40.3, 1.25, 0.55],
+    [-12.9, 32.1, 1.6, 0.38],
+  ]) {
+    const patch = box(x, 0.038, z, w, 0.014, d, mats.patch);
+    patch.castShadow = false;
   }
-  box(-1.8, 2.82, 40, 2.1, 0.15, 5.4, mats.teal);
-  box(-1.8, 0.45, 40, 0.55, 0.18, 2.4, mats.edge);
-  sign("SERVICE SUSPENDED", -1.8, 2.45, 42.75, 3.2, 0.6);
+  for (const pocket of STREET_POCKETS) {
+    const group = new THREE.Group();
+    group.name = pocket.name;
+    exterior.add(group);
+    const concrete = mats.limestone.clone(),
+      metal = mats.oxidized.clone(),
+      dark = mats.dark.clone(),
+      cloth = mats.fabric.clone(),
+      green = mats.leaf.clone(),
+      soil = mats.soil.clone();
+    const materials = [concrete, metal, dark, cloth, green, soil];
+    // Only supporting posts and furniture have ground footprints; shade is
+    // overhead. All shapes stay outside the shared paired approach corridors.
+    function solid(
+      x: number,
+      y: number,
+      z: number,
+      w: number,
+      h: number,
+      d: number,
+      material = concrete,
+    ) {
+      box(x, y, z, w, h, d, material, group);
+      collisions.push({ x, z, w, d });
+    }
+    function seat(x: number, z: number, w: number) {
+      solid(x, 0.48, z, w, 0.13, 0.42);
+      box(x, 0.76, z - 0.18, w, 0.4, 0.06, metal, group);
+      for (const side of [-1, 1])
+        box(x + side * w * 0.34, 0.23, z, 0.13, 0.46, 0.32, dark, group);
+    }
+    function planter(x: number, z: number, w: number, d: number) {
+      solid(x, 0.23, z, w, 0.46, d, metal);
+      box(x, 0.47, z, w - 0.08, 0.03, d - 0.08, soil, group);
+      for (let plant = 0; plant < 3; plant++)
+        box(
+          x + (plant - 1) * w * 0.24,
+          0.62 + (plant % 2) * 0.12,
+          z + (plant - 1) * d * 0.13,
+          w * 0.34,
+          0.27 + (plant % 2) * 0.23,
+          d * 0.48,
+          green,
+          group,
+        );
+    }
+    const [left, right] = pocket.positions;
+    const cx = (left[0] + right[0]) / 2,
+      cz = (left[1] + right[1]) / 2;
+    if (pocket.id === "exchange-court") {
+      box(cx, 0.037, cz - 0.02, 2.8, 0.02, 1.35, mats.patch).castShadow = false;
+      seat(cx, cz - 0.67, 1.85);
+      for (const x of [cx - 1.05, cx + 1.1])
+        solid(x, 1.33, cz - 0.55, 0.09, 2.66, 0.09, metal);
+      const shade = box(cx, 2.69, cz - 0.25, 2.45, 0.065, 1.35, cloth, group);
+      shade.rotation.z = -0.06;
+      box(cx + 0.57, 2.72, cz - 0.25, 0.52, 0.04, 1.28, metal, group);
+      // Keep the Z8 through-street clear, including the player's radius.
+      solid(cx + 1.3, 1.43, cz - 0.37, 0.16, 0.75, 1.2, dark);
+      box(cx + 1.3, 0.52, cz - 0.37, 0.12, 1.04, 0.12, metal, group);
+      sign(
+        "SWAPS / SHIFT NOTICES",
+        cx + 1.39,
+        1.6,
+        cz - 0.37,
+        1.14,
+        0.28,
+        true,
+        "#d9cba8",
+        { group, materials },
+      );
+      // Posted slips share their finish instead of making a texture per scrap.
+      for (let slip = 0; slip < 3; slip++)
+        box(
+          cx + 1.39,
+          1.18 + (slip % 2) * 0.06,
+          cz - 0.53 + slip * 0.2,
+          0.02,
+          0.2,
+          0.13,
+          cloth,
+          group,
+        );
+    } else if (pocket.id === "reclamation-yard") {
+      box(cx - 0.3, 0.037, cz, 2.5, 0.02, 4, mats.patch).castShadow = false;
+      solid(cx - 1.6, 1.13, cz, 0.12, 2.26, 3.8, metal);
+      for (const z of [cz - 1.8, cz + 1.8])
+        solid(cx - 0.28, 1.05, z, 0.1, 2.1, 0.1, dark);
+      const leanTo = box(cx - 0.91, 2.24, cz, 1.7, 0.1, 4.05, metal, group);
+      leanTo.rotation.z = -0.12;
+      for (const z of [cz - 1.2, cz + 0.75])
+        box(cx - 0.91, 2.31, z, 1.66, 0.06, 0.24, concrete, group).rotation.z =
+          -0.12;
+      solid(cx - 1.03, 0.82, cz - 0.1, 0.62, 0.13, 1.45, concrete);
+      for (const z of [cz - 0.62, cz + 0.42])
+        box(cx - 1.03, 0.39, z, 0.42, 0.78, 0.14, dark, group);
+      box(cx - 1.03, 0.94, cz - 0.32, 0.24, 0.1, 0.42, metal, group);
+      box(cx - 1.06, 0.93, cz + 0.34, 0.32, 0.08, 0.15, dark, group);
+      planter(cx + 0.75, cz - 1.65, 1, 0.6);
+      planter(cx + 0.95, cz + 1.6, 0.65, 0.8);
+      solid(cx - 1, 0.3, cz + 1.3, 0.7, 0.6, 0.45, dark);
+      sign(
+        "MEND / SHARE",
+        cx - 0.88,
+        1.89,
+        cz + 1.95,
+        1.4,
+        0.4,
+        false,
+        "#d9cba8",
+        { group, materials },
+      );
+    } else {
+      box(cx - 0.2, 0.037, cz, 3.5, 0.02, 1.65, mats.patch).castShadow = false;
+      for (const [dx, dz, w, d] of [
+        [-0.9, 0.37, 0.75, 0.42],
+        [0.15, 0.42, 1.1, 0.32],
+        [-0.45, -0.12, 0.6, 0.46],
+        [0.7, -0.22, 0.45, 0.64],
+      ])
+        box(cx + dx, 0.052, cz + dz, w, 0.006, d, mats.limestone).castShadow =
+          false;
+      seat(cx - 0.1, cz - 0.87, 1.75);
+      planter(cx - 2.3, cz - 0.15, 0.75, 0.72);
+      planter(cx + 1.28, cz - 0.7, 0.55, 0.5);
+      // The original suspended-service shelter remains, with a shorter bench
+      // south of the Z41.1 crossing and an honest footprint.
+      box(-1.8, 0.037, 40, 1.4, 0.02, 5, mats.patch).castShadow = false;
+      for (const z of [38, 42]) solid(-1.8, 1.4, z, 0.12, 2.8, 0.12, dark);
+      box(-1.8, 2.82, 40, 2.1, 0.15, 5.4, metal, group);
+      box(-2.15, 2.91, 39.2, 0.65, 0.04, 1.2, concrete, group);
+      solid(-1.8, 0.45, 39.55, 0.5, 0.18, 1.5);
+      for (const z of [39, 40.1])
+        box(-1.8, 0.22, z, 0.35, 0.44, 0.12, dark, group);
+      sign("SERVICE SUSPENDED", -1.8, 2.45, 42.75, 3.2, 0.6, false, "#d9cba8", {
+        group,
+        materials,
+      });
+    }
+    fadeGroups.push({
+      group,
+      box: new THREE.Box3().setFromObject(group),
+      materials,
+    });
+  }
   sign("SOUTH CONCOURSE", 0, 0.07, 18.2, 4.8, 0.8).rotation.x = -Math.PI / 2;
   sign("EAST GRID EXCHANGE", 29, 0.07, 40, 5, 0.7).rotation.x = -Math.PI / 2;
   sign("TRANSPORT ONLY", 10.5, 1.8, 47, 3, 0.6);
@@ -539,9 +1101,7 @@ export function createWorld(container: HTMLElement) {
   }
   box(-5, 3.8, 8.3, 2.1, 0.2, 5, mats.roof);
   for (const x of [-6, -4]) box(x, 4.15, 8.3, 0.07, 0.7, 5, mats.edge);
-  // Shop shutters, service equipment and human-scale street furniture.
-  for (let i = 0; i < 9; i++)
-    box(4.8, 0.22 + i * 0.15, 10.1, 2.3, 0.09, 0.05, mats.dark);
+  // Mission service equipment remains at its original interaction coordinates.
   tube(-12.1, 0.65, -7.9, 0.7, 1.3, mats.teal);
   box(-12.1, 1.35, -7.9, 1.5, 0.12, 1.5, mats.edge);
   box(38, 0.65, 38, 0.7, 1.3, 0.7, mats.dark);
