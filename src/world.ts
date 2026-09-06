@@ -1012,6 +1012,246 @@ export function createWorld(container: HTMLElement) {
   exterior.add(compound.group);
   collisions.push(...compound.collisions);
   fadeGroups.push(...compound.houses);
+  // Civic art uses the same owned-material fading and static batches as buildings.
+  // Only the plinths touch the ground; tall overhangs leave adjacent paths open.
+  const sculptureGroups: typeof fadeGroups = [];
+  const hoopGeometry = new THREE.TorusGeometry(1, 0.09, 6, 32);
+  function monument(name: string, x: number, z: number, w: number, d: number) {
+    const group = new THREE.Group();
+    group.name = name;
+    group.position.set(x, 0, z);
+    exterior.add(group);
+    const stone = mats.limestone.clone(),
+      bronze = mats.amber.clone(),
+      dark = mats.dark.clone(),
+      verdigris = mats.oxidized.clone();
+    bronze.metalness = 0.62;
+    bronze.roughness = 0.4;
+    const materials = [stone, bronze, dark, verdigris];
+    const sculpture = { group, box: new THREE.Box3(), materials };
+    sculptureGroups.push(sculpture);
+    fadeGroups.push(sculpture);
+    box(0, 0.18, 0, w, 0.36, d, dark, group);
+    box(0, 0.47, 0, w - 0.16, 0.22, d - 0.16, stone, group);
+    collisions.push({ x, z, w, d });
+    return { group, materials, stone, bronze, dark, verdigris };
+  }
+  function hoop(
+    x: number,
+    y: number,
+    z: number,
+    w: number,
+    h: number,
+    material: THREE.Material,
+    parent: THREE.Object3D,
+  ) {
+    const mesh = new THREE.Mesh(hoopGeometry, material);
+    mesh.position.set(x, y, z);
+    mesh.scale.set(w, h, 1);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    parent.add(mesh);
+    return mesh;
+  }
+  {
+    const art = monument("The Provider", -13.5, -12.7, 2.6, 2.6);
+    const { group, stone, bronze, dark, verdigris } = art;
+    // An anonymous nine-metre benefactor physically holding its own halo.
+    for (const side of [-1, 1]) {
+      box(side * 0.48, 0.76, 0.16, 0.65, 0.35, 0.95, dark, group);
+      box(side * 0.43, 2, 0, 0.57, 2.25, 0.7, verdigris, group);
+      box(side * 1.2, 4.55, 0, 0.48, 1.55, 0.58, verdigris, group).rotation.z =
+        side * 0.42;
+      box(side * 1.58, 5.35, 0, 0.38, 1.2, 0.48, verdigris, group).rotation.z =
+        -side * 0.22;
+      box(side * 1.72, 5.91, -0.03, 0.64, 0.25, 0.6, bronze, group);
+    }
+    box(0, 3.07, 0, 1.52, 0.4, 0.92, bronze, group);
+    box(0, 4.25, 0, 1.85, 2.15, 0.9, verdigris, group);
+    box(0, 5.27, 0, 2.25, 0.4, 1, stone, group);
+    box(0, 5.7, 0, 0.54, 0.55, 0.56, dark, group);
+    box(0, 6.63, 0, 1.13, 1.5, 0.9, stone, group);
+    box(0.14, 6.63, 0.461, 0.065, 1.08, 0.025, dark, group);
+    hoop(0, 7.12, -0.17, 2, 2, bronze, group);
+    sign("THE PROVIDER", 0, 0.46, 1.31, 2.3, 0.27, false, "#e2d5b4", art);
+  }
+  {
+    const art = monument("The Witness", 14.1, -5, 2, 1.8);
+    const { group, stone, bronze, dark, verdigris } = art;
+    for (const side of [-1, 1])
+      box(side * 0.38, 1.72, 0, 0.23, 2.4, 0.33, stone, group).rotation.z =
+        -side * 0.22;
+    const eye = new THREE.Group();
+    eye.position.set(0, 3.65, 0);
+    eye.rotation.y = Math.PI / 4;
+    group.add(eye);
+    hoop(0, 0, 0, 1.65, 1.05, bronze, eye);
+    hoop(0, 0, 0, 1.4, 0.81, verdigris, eye);
+    tube(0, 0, 0, 0.57, 0.16, dark, eye).rotation.x = Math.PI / 2;
+    tube(0, 0, 0.12, 0.3, 0.13, bronze, eye).rotation.x = Math.PI / 2;
+    tube(0, 0, 0.2, 0.12, 0.12, dark, eye).rotation.x = Math.PI / 2;
+    for (const side of [-1, 1])
+      box(side * 0.96, 0, 0, 0.88, 0.065, 0.08, dark, eye);
+    sign(
+      "THE WITNESS / CIVIC ART",
+      0,
+      0.46,
+      0.91,
+      1.85,
+      0.25,
+      false,
+      "#e2d5b4",
+      art,
+    );
+  }
+  {
+    const art = monument("Still Here", -14.4, 20, 1.3, 1.5);
+    const { group, stone, bronze, dark, verdigris } = art;
+    // Residents welded discarded chairs together; a plant claims the top seat.
+    box(0, 1.85, -0.28, 0.09, 2.7, 0.09, dark, group);
+    for (let tier = 0; tier < 3; tier++) {
+      const chair = new THREE.Group();
+      chair.position.set((tier % 2) * 0.12 - 0.06, 0.59 + tier * 0.76, 0);
+      chair.rotation.y = (tier - 1) * 0.24;
+      group.add(chair);
+      const finish = tier === 1 ? bronze : verdigris;
+      box(0, 0.4, 0, 0.8, 0.09, 0.7, finish, chair);
+      for (const x of [-0.33, 0.33]) {
+        for (const z of [-0.26, 0.26])
+          box(x, 0.2, z, 0.07, 0.4, 0.07, dark, chair);
+        box(x, 0.75, -0.28, 0.07, 0.75, 0.07, finish, chair);
+      }
+      for (const y of [0.72, 0.99])
+        box(0, y, -0.28, 0.73, 0.12, 0.075, finish, chair);
+    }
+    tube(0, 2.68, 0.08, 0.19, 0.34, stone, group);
+    for (const side of [-1, 1])
+      box(
+        side * 0.15,
+        3.02,
+        0.08,
+        0.14,
+        0.5,
+        0.22,
+        verdigris,
+        group,
+      ).rotation.z = -side * 0.55;
+    sign("STILL HERE", 0, 0.46, 0.76, 1.13, 0.23, false, "#e2d5b4", art);
+  }
+  {
+    const art = monument("Unspent Hours", -13.7, 44, 1.8, 1.8);
+    const { group, stone, bronze, dark } = art;
+    box(0, 1.15, 0, 0.82, 1.15, 0.75, stone, group);
+    box(-0.2, 2.83, 0, 0.25, 2.45, 0.28, dark, group).rotation.z = -0.13;
+    const dial = new THREE.Group();
+    dial.position.set(0, 5.25, 0);
+    dial.rotation.y = Math.PI / 4;
+    group.add(dial);
+    hoop(0, 0, 0, 1.48, 1.48, bronze, dial);
+    for (let tick = 0; tick < 12; tick++) {
+      const angle = (tick * Math.PI) / 6;
+      box(
+        Math.sin(angle) * 1.3,
+        Math.cos(angle) * 1.3,
+        0,
+        0.12,
+        0.26,
+        0.2,
+        stone,
+        dial,
+      ).rotation.z = -angle;
+    }
+    // No hands: the allotted hours fall through a permanently empty clock.
+    box(0, 0.48, 0, 0.04, 1.65, 0.05, dark, dial);
+    for (let hour = 0; hour < 6; hour++)
+      box(
+        (hour % 2) * 0.18 - 0.09,
+        0.74 - hour * 0.34,
+        0,
+        0.25,
+        0.25,
+        0.25,
+        bronze,
+        dial,
+      ).rotation.z = Math.PI / 4;
+    sign("UNSPENT HOURS", 0, 0.46, 0.91, 1.63, 0.25, false, "#e2d5b4", art);
+  }
+  {
+    const art = monument("The Inertia Share", 28.1, 27.9, 3, 1.8);
+    const { group, stone, bronze, dark } = art;
+    box(0, 1.43, 0, 0.8, 1.7, 0.8, stone, group);
+    const share = new THREE.Group();
+    share.position.set(0, 3.85, 0);
+    share.rotation.y = Math.PI / 4;
+    group.add(share);
+    // Exactly 52% of the ring owns the whole miniature city inside it.
+    for (const [fraction, start, finish] of [
+      [0.52, -Math.PI / 2, bronze],
+      [0.48, Math.PI * 0.54, dark],
+    ] as const) {
+      const arc = new THREE.Mesh(
+        new THREE.TorusGeometry(1.65, 0.2, 6, 40, Math.PI * 2 * fraction),
+        finish,
+      );
+      arc.rotation.z = start;
+      arc.castShadow = true;
+      arc.receiveShadow = true;
+      share.add(arc);
+    }
+    box(0, -0.67, 0, 1.75, 0.15, 0.8, bronze, share);
+    for (const [x, h] of [
+      [-0.57, 0.65],
+      [0, 1.35],
+      [0.57, 0.9],
+    ]) {
+      box(x, h / 2 - 0.6, 0, 0.42, h, 0.57, stone, share);
+      box(x, h - 0.58, 0, 0.46, 0.09, 0.61, bronze, share);
+    }
+    sign("52% / ALL OF IT", 0, 0.46, 0.91, 2.7, 0.27, false, "#e2d5b4", art);
+  }
+  {
+    const art = monument("Seat of Continuity", 28.1, 43.1, 3, 1.8);
+    const { group, stone, bronze, dark } = art;
+    for (const x of [-0.65, 0.65]) {
+      box(x, 0.98, 0, 0.22, 0.8, 0.72, bronze, group);
+      box(x, 1.6, 0, 0.21, 0.2, 1, bronze, group);
+    }
+    box(0, 1.23, 0, 1.5, 0.24, 0.95, stone, group);
+    box(0, 2.18, -0.35, 1.45, 1.8, 0.24, dark, group);
+    box(0, 3.13, -0.35, 1.6, 0.16, 0.32, bronze, group);
+    for (const side of [-1, 1]) {
+      box(side * 1.08, 3.2, -0.15, 0.1, 5.25, 0.12, dark, group);
+      box(side * 1.2, 5.76, -0.15, 0.4, 0.1, 0.16, dark, group);
+    }
+    hoop(0, 5.85, -0.15, 1.35, 1.35, bronze, group).rotation.x = Math.PI / 2;
+    const toothGeometry = new THREE.ConeGeometry(1, 1, 4);
+    for (let tooth = 0; tooth < 7; tooth++) {
+      const angle = (tooth * Math.PI * 2) / 7;
+      const mesh = new THREE.Mesh(toothGeometry, bronze);
+      mesh.position.set(
+        Math.cos(angle) * 1.25,
+        6.17,
+        Math.sin(angle) * 1.25 - 0.15,
+      );
+      mesh.scale.set(0.25, tooth % 2 ? 0.7 : 1.1, 0.25);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      group.add(mesh);
+    }
+    sign(
+      "CONTINUITY HAS A SEAT",
+      0,
+      0.46,
+      0.91,
+      2.7,
+      0.27,
+      false,
+      "#e2d5b4",
+      art,
+    );
+  }
+  for (const sculpture of sculptureGroups)
+    sculpture.box.setFromObject(sculpture.group);
   // The same six-edge footprint drives the visible perimeter and player bounds.
   for (let edge = 0; edge < DISTRICT_OUTLINE.length; edge++) {
     const [x1, z1] = DISTRICT_OUTLINE[edge],
@@ -1061,11 +1301,6 @@ export function createWorld(container: HTMLElement) {
   sign("MERIDIAN COMPACT", -1, 5.9, -19.7, 6.5, 1);
   sign("LEADERSHIP PROVIDES", -1, 3.8, -19.7, 6.5, 0.85);
   sign("CITIZENSHIP CONTRIBUTES", -1, 2.5, -19.7, 6.5, 0.85);
-  // Monumental invented leader silhouette, no real person or insignia.
-  box(-13, 4.5, -18, 3.3, 9, 0.35, mats.dark);
-  tube(-13, 7.4, -17.75, 0.5, 0.16, mats.teal).rotation.x = Math.PI / 2;
-  box(-13, 5.1, -17.73, 1.25, 3.2, 0.15, mats.teal);
-  box(-13, 5.7, -17.72, 2.4, 0.65, 0.15, mats.teal);
   for (const x of [-19, 17, 21])
     for (let i = 0; i < 3; i++) {
       box(x, 0.45, -23 - i * 3.5, 2.3, 0.9, 1.8, mats.roof);
