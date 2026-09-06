@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { STREET_POCKETS } from "./content";
 
 type Point = readonly [number, number];
 type Notice = {
@@ -36,6 +37,18 @@ type Stage =
   | "departing"
   | "away"
   | "returning";
+type Pocket = (typeof STREET_POCKETS)[number];
+type Visit = {
+  pocket: Pocket;
+  spot: number;
+  progress: number;
+  next: number;
+  state: "circulating" | "outbound" | "visiting" | "inbound";
+  due: number;
+  until: number;
+  initialDue: number;
+  partner: Actor;
+};
 interface Actor {
   x: number;
   z: number;
@@ -56,8 +69,11 @@ interface Actor {
   progress: number;
   perimeter: number;
   edgeStarts: readonly number[];
-  leader?: Actor;
-  spacing: number;
+  roster?: readonly Actor[];
+  visit?: Visit;
+  height: number;
+  gaitScale: number;
+  carrying: boolean;
   skin: number;
   initial: {
     x: number;
@@ -200,6 +216,18 @@ export function createStreetLife(options: {
       !(x > 8.35 && x < 11.65 && z < -1.2 && z > -13.65)
     );
   }
+  function validateEdge(a: Point, b: Point, label: string) {
+    const samples = Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 0.1);
+    for (let sample = 0; sample <= samples; sample++) {
+      const fraction = samples === 0 ? 0 : sample / samples;
+      const x = a[0] + (b[0] - a[0]) * fraction;
+      const z = a[1] + (b[1] - a[1]) * fraction;
+      if (!staticClear(x, z))
+        throw new Error(
+          `${label} blocked at (${x.toFixed(2)}, ${z.toFixed(2)})`,
+        );
+    }
+  }
   function measureRoute(route: readonly Point[]) {
     const existing = routeMetrics.get(route);
     if (existing) return existing;
@@ -213,15 +241,7 @@ export function createStreetLife(options: {
       starts.push(perimeter);
       // Validate whole edges, not just corners/spawns. Fail visibly on changed
       // authored geometry rather than teleporting a roster to one clear corner.
-      const samples = Math.ceil(length / 0.1);
-      for (let sample = 0; sample <= samples; sample++) {
-        const x = a[0] + ((b[0] - a[0]) * sample) / samples;
-        const z = a[1] + ((b[1] - a[1]) * sample) / samples;
-        if (!staticClear(x, z))
-          throw new Error(
-            `Street route blocked at (${x.toFixed(2)}, ${z.toFixed(2)})`,
-          );
-      }
+      validateEdge(a, b, "Street route");
       perimeter += length;
     }
     const metrics = { starts, perimeter };
@@ -271,7 +291,9 @@ export function createStreetLife(options: {
       progress: phase * perimeter,
       perimeter,
       edgeStarts,
-      spacing: 0,
+      height: police ? 1 : 0.94 + (stride / (Math.PI * 2)) * 0.12,
+      gaitScale: police ? 1 : 0.86 + (stride / (Math.PI * 2)) * 0.28,
+      carrying: !police && actors.length % 5 === 2,
       color: police ? 0x293b3f : clothes[Math.floor(random() * clothes.length)],
       skin: skins[Math.floor(random() * skins.length)],
       initial: {
@@ -296,15 +318,65 @@ export function createStreetLife(options: {
     for (let i = 0; i < count; i++)
       roster.push(addActor(route, speed, (i + 0.5) / count, police));
     for (let i = 0; i < count; i++) {
-      roster[i].leader = roster[(i + 1) % count];
-      roster[i].spacing = roster[i].perimeter / count;
+      roster[i].roster = roster;
     }
     return roster;
   }
   // 40 civic residents (24 walkers + 8 service queues + 8 custody roster),
   // 36 south residents, 36 public-compound residents: still exactly 112.
-  for (let i = 0; i < routes.length; i++)
-    populate(routes[i], i < 3 ? 8 : 18, 0.62);
+  const walkers = routes.map((route, i) =>
+    populate(route, i < 3 ? 8 : 18, 0.62),
+  );
+  for (let index = 0; index < STREET_POCKETS.length; index++) {
+    const pocket = STREET_POCKETS[index];
+    const route = routes[pocket.route];
+    const { starts } = measureRoute(route);
+    let approachEdge = -1;
+    let progress = 0;
+    for (let edge = 0; edge < route.length; edge++) {
+      const a = route[edge],
+        b = route[(edge + 1) % route.length];
+      const length = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      const offset = Math.hypot(
+        pocket.approach[0] - a[0],
+        pocket.approach[1] - a[1],
+      );
+      const remaining = Math.hypot(
+        pocket.approach[0] - b[0],
+        pocket.approach[1] - b[1],
+      );
+      if (Math.abs(offset + remaining - length) < 0.0001) {
+        approachEdge = edge;
+        progress = starts[edge] + offset;
+        break;
+      }
+    }
+    if (approachEdge < 0)
+      throw new Error(`Pocket ${pocket.id} is off its circuit`);
+    for (const point of pocket.positions)
+      validateEdge(pocket.approach, point, `Street pocket ${pocket.id}`);
+    validateEdge(
+      pocket.positions[0],
+      pocket.positions[1],
+      `Street pocket ${pocket.id}`,
+    );
+    const first = index === 0 ? 2 : index === 1 ? 5 : 10;
+    const roster = walkers[pocket.route];
+    for (let spot = 0; spot < 2; spot++) {
+      const initialDue = 12 + index * 19;
+      roster[first + spot].visit = {
+        pocket,
+        spot,
+        progress,
+        next: (approachEdge + 1) % route.length,
+        state: "circulating",
+        due: initialDue,
+        until: 0,
+        initialDue,
+        partner: roster[first + 1 - spot],
+      };
+    }
+  }
   // Two slow, circulating service queues, with clear space around the terminals.
   const queues: readonly (readonly Point[])[] = [
     [
@@ -367,6 +439,13 @@ export function createStreetLife(options: {
     group.add(mesh);
     return mesh;
   });
+  actorParts[0].name = "Resident and officer bodies";
+  const bags = new THREE.InstancedMesh(cube, materials.cloth, civilianCount);
+  bags.name = "Resident everyday bags";
+  bags.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  bags.frustumCulled = false;
+  bags.castShadow = true;
+  group.add(bags);
   const rifles = Array.from({ length: 3 }, () => {
     const mesh = new THREE.InstancedMesh(cube, materials.dark, guards.length);
     mesh.name = "Owner guard low-ready rifle";
@@ -379,6 +458,7 @@ export function createStreetLife(options: {
   const color = new THREE.Color();
   for (let i = 0; i < actors.length; i++) {
     const actor = actors[i];
+    if (!actor.police) bags.setColorAt(i, color.setHex(0x897b60));
     for (let part = 0; part < actorParts.length; part++) {
       if (part >= 7 && !actor.police) continue;
       const tint =
@@ -427,10 +507,11 @@ export function createStreetLife(options: {
     d: number,
     rx = 0,
     rz = 0,
+    ry = 0,
   ) {
     partMatrix.compose(
       position.set(x, y, z),
-      rotation.setFromEuler(euler.set(rx, 0, rz)),
+      rotation.setFromEuler(euler.set(rx, ry, rz)),
       scale.set(w, h, d),
     );
     matrix.multiplyMatrices(rootMatrix, partMatrix);
@@ -447,15 +528,26 @@ export function createStreetLife(options: {
         .premultiply(contactRotation);
       matrix.setPosition(a.x, 0.065, a.z);
       contacts.setMatrixAt(i, matrix);
-      const gait = Math.sin(a.stride) * a.walking;
+      const gait = Math.sin(a.stride) * a.walking * a.gaitScale;
+      const social = a.visit?.state === "visiting";
+      const glance =
+        a.police || a.hands
+          ? 0
+          : Math.sin(time * 0.63 + a.initial.stride) *
+            (social
+              ? 0.16
+              : Math.max(0, Math.sin(time * 0.19 + a.initial.stride)) * 0.38);
+      const gesture = social
+        ? Math.max(0, Math.sin(time * 1.5 + a.initial.stride))
+        : 0;
       rootMatrix.compose(
         position.set(a.x, a.y, a.z),
         rotation.setFromEuler(euler.set(a.lean, a.heading, 0, "YXZ")),
-        scale.setScalar(a.hidden ? 0 : 1),
+        scale.set(a.hidden ? 0 : 1, a.hidden ? 0 : a.height, a.hidden ? 0 : 1),
       );
       const bob = Math.abs(gait) * 0.018;
       renderPart(i, 0, 0, 0.79 + bob, 0, 0.42, 0.55, 0.29);
-      renderPart(i, 1, 0, 1.19 + bob, 0, 0.25, 0.28, 0.25);
+      renderPart(i, 1, 0, 1.19 + bob, 0, 0.25, 0.28, 0.25, 0, 0, glance);
       renderPart(
         i,
         2,
@@ -487,8 +579,12 @@ export function createStreetLife(options: {
         0.12,
         0.47,
         0.15,
-        a.pushing ? Math.PI / 2 : a.armed ? -0.65 : -gait * 0.25,
-        a.hands ? -2.65 : 0,
+        a.pushing
+          ? Math.PI / 2
+          : a.armed
+            ? -0.65
+            : -gait * 0.25 - gesture * 0.6,
+        a.hands ? -2.65 : -gesture * 0.16,
       );
       renderPart(
         i,
@@ -499,7 +595,13 @@ export function createStreetLife(options: {
         0.12,
         0.47,
         0.15,
-        a.pushing ? Math.PI / 2 : a.armed ? -0.65 : gait * 0.25,
+        a.pushing
+          ? Math.PI / 2
+          : a.armed
+            ? -0.65
+            : a.carrying
+              ? -0.2
+              : gait * 0.25,
         a.hands ? 2.65 : 0,
       );
       renderPart(
@@ -511,8 +613,24 @@ export function createStreetLife(options: {
         a.police ? 0.34 : 0.28,
         a.police ? 0.16 : 0.075,
         0.29,
+        0,
+        0,
+        glance,
       );
-      if (!a.police) continue;
+      if (!a.police) {
+        partMatrix.compose(
+          position.set(0.31, 0.48 + bob, 0.04),
+          rotation.setFromEuler(euler.set(a.carrying ? gait * 0.08 : 0, 0, 0)),
+          scale.set(
+            a.carrying ? 0.19 : 0,
+            a.carrying ? 0.27 : 0,
+            a.carrying ? 0.16 : 0,
+          ),
+        );
+        matrix.multiplyMatrices(rootMatrix, partMatrix);
+        bags.setMatrixAt(i, matrix);
+        continue;
+      }
       renderPart(
         i,
         7,
@@ -550,6 +668,7 @@ export function createStreetLife(options: {
     }
     for (const part of actorParts) part.instanceMatrix.needsUpdate = true;
     for (const rifle of rifles) rifle.instanceMatrix.needsUpdate = true;
+    bags.instanceMatrix.needsUpdate = true;
     contacts.instanceMatrix.needsUpdate = true;
   }
 
@@ -886,6 +1005,7 @@ export function createStreetLife(options: {
     dt: number,
     view: StreetView,
     ignoreVan = false,
+    direct = false,
   ) {
     const dx = tx - a.x,
       dz = tz - a.z;
@@ -904,6 +1024,7 @@ export function createStreetLife(options: {
     // vehicle. No reciprocal repulsion, detour phase jumps or waiting cycles.
     if (
       !tryActorStep(a, vx, vz, step, view, playerDistance, ignoreVan) &&
+      !direct &&
       !blocked(a.x + vx * step, a.z + vz * step)
     ) {
       const side = a.initial.stride > Math.PI ? 1 : -1;
@@ -935,25 +1056,71 @@ export function createStreetLife(options: {
     const moved = Math.hypot(a.x - oldX, a.z - oldZ);
     if (moved > 0.00001) {
       a.heading = Math.atan2(a.x - oldX, a.z - oldZ);
-      a.stride += moved * 8.5;
+      a.stride += (moved * 8.5) / a.gaitScale;
       a.walking = Math.min(1, moved / Math.max(dt * 0.45, 0.0001));
     }
     return Math.hypot(tx - a.x, tz - a.z) < 0.001;
   }
+  function circulating(a: Actor) {
+    return (
+      !a.hidden &&
+      a !== detainee &&
+      (!a.visit || a.visit.state === "circulating")
+    );
+  }
   function followRoute(a: Actor, dt: number, view: StreetView) {
-    const target = a.route[a.next];
-    let speed = a.speed;
-    const leader = a.leader;
-    if (leader && !leader.hidden && leader !== detainee) {
-      const gap = (leader.progress - a.progress + a.perimeter) % a.perimeter;
-      const minimumGap = Math.min(2, a.spacing * 0.55);
+    const visit = a.visit;
+    // A blocked/occupied meeting never makes a walker wait on the sidewalk.
+    const approaching =
+      visit &&
+      time >= visit.due &&
+      a.next === visit.next &&
+      visit.progress >= a.progress &&
+      visit.partner.visit?.state !== "inbound" &&
+      Math.hypot(
+        visit.partner.x - visit.pocket.approach[0],
+        visit.partner.z - visit.pocket.approach[1],
+      ) > 0.85;
+    const target = approaching ? visit.pocket.approach : a.route[a.next];
+    // Equal long-run pace, but short bouts of purposeful walking and easing up.
+    // Headway recovery still wins; no permanent slowest person sets a circuit's speed.
+    let speed =
+      a.speed *
+      (a.police
+        ? 1
+        : 1 +
+          0.11 *
+            Math.sin(
+              time * (0.29 + a.initial.stride * 0.018) + a.initial.stride,
+            ));
+    if (a.roster) {
+      let gap = a.perimeter;
+      let count = 1;
+      for (const other of a.roster) {
+        if (other === a || !circulating(other)) continue;
+        count++;
+        gap = Math.min(
+          gap,
+          (other.progress - a.progress + a.perimeter) % a.perimeter,
+        );
+      }
+      const spacing = a.perimeter / count;
+      const minimumGap = Math.min(2, spacing * 0.55);
       speed *= Math.max(
         0,
-        Math.min(1.2, (gap - minimumGap) / (a.spacing - minimumGap)),
+        Math.min(1.2, (gap - minimumGap) / (spacing - minimumGap)),
       );
     }
-    if (moveTo(a, target[0], target[1], speed, dt, view))
+    // Wait on the validated segment. Sidestepping toward a distant corner can
+    // strand a walker behind a neighboring block and pin the entire circuit.
+    if (moveTo(a, target[0], target[1], speed, dt, view, false, true)) {
+      if (approaching) {
+        visit.state = "outbound";
+        a.progress = visit.progress;
+        return;
+      }
       a.next = (a.next + 1) % a.route.length;
+    }
     const edge = (a.next + a.route.length - 1) % a.route.length;
     const start = a.route[edge],
       end = a.route[a.next];
@@ -970,6 +1137,62 @@ export function createStreetLife(options: {
           ),
         )) %
       a.perimeter;
+  }
+  function advanceVisit(a: Actor, dt: number, view: StreetView) {
+    const visit = a.visit!;
+    const partner = visit.partner;
+    const position = visit.pocket.positions[visit.spot];
+    a.walking = 0;
+    if (visit.state === "visiting") {
+      const facing = visit.pocket.positions[1 - visit.spot];
+      a.heading = Math.atan2(facing[0] - a.x, facing[1] - a.z);
+      if (
+        time < visit.until ||
+        partner.visit?.state === "outbound" ||
+        partner.visit?.state === "inbound"
+      )
+        return;
+      visit.state = "inbound";
+    }
+    const target =
+      visit.state === "outbound" ? position : visit.pocket.approach;
+    const distance = Math.hypot(target[0] - a.x, target[1] - a.z);
+    const speed = 0.64;
+    // Wait off-path for a real merge gap, with enough rear clearance for the
+    // remaining approach time. Through walkers never yield to a social routine.
+    if (visit.state === "inbound" && distance < 1.1 && a.roster) {
+      for (const other of a.roster) {
+        if (other === a || !circulating(other)) continue;
+        const ahead =
+          (other.progress - visit.progress + a.perimeter) % a.perimeter;
+        const behind =
+          (visit.progress - other.progress + a.perimeter) % a.perimeter;
+        if (ahead < 0.8 || behind < 0.7 + (distance / speed) * 0.85) return;
+      }
+    }
+    // The two connectors share their mouth, not their destinations. Prevent
+    // overlap without repelling either resident into unvalidated scenery.
+    if (distance > 0.001) {
+      const step = Math.min(speed * dt, distance);
+      const nx = a.x + ((target[0] - a.x) / distance) * step;
+      const nz = a.z + ((target[1] - a.z) / distance) * step;
+      for (const other of actors) {
+        if (other === a || other.hidden) continue;
+        const oldGap = Math.hypot(other.x - a.x, other.z - a.z);
+        if (Math.hypot(other.x - nx, other.z - nz) < Math.min(0.6, oldGap))
+          return;
+      }
+    }
+    if (!moveTo(a, target[0], target[1], speed, dt, view, false, true)) return;
+    if (visit.state === "outbound") {
+      visit.state = "visiting";
+      visit.until = time + 27 + visit.spot * 8 + a.initial.stride;
+    } else {
+      visit.state = "circulating";
+      visit.due = time + 42 + a.initial.stride * 2;
+      a.progress = visit.progress;
+      a.next = visit.next;
+    }
   }
   function advanceEvent(dt: number, view: StreetView) {
     stageTime += dt;
@@ -1293,7 +1516,9 @@ export function createStreetLife(options: {
           (escorting && (actor === escorts[0] || actor === escorts[1]))
         )
           continue;
-        followRoute(actor, dt, view);
+        if (actor.visit && actor.visit.state !== "circulating")
+          advanceVisit(actor, dt, view);
+        else followRoute(actor, dt, view);
       }
       advanceEvent(dt, view);
       movePatrolCar(dt, view);
@@ -1330,6 +1555,11 @@ export function createStreetLife(options: {
       actor.hands = false;
       actor.pushing = false;
       actor.lean = 0;
+      if (actor.visit) {
+        actor.visit.state = "circulating";
+        actor.visit.due = actor.visit.initialDue;
+        actor.visit.until = 0;
+      }
     }
     van.position.set(vanX, 0, parkedZ);
     van.visible = true;
