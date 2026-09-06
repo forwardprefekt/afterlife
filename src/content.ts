@@ -70,6 +70,40 @@ export const DISTRICT_ROADS: readonly DistrictRoad[] = [
     to: [48, z] as const,
   })),
 ];
+
+// Off-path public spaces share their clear approaches with resident routines.
+export const STREET_POCKETS = [
+  {
+    id: "exchange-court",
+    name: "EXCHANGE COURT",
+    route: 1,
+    approach: [-6.8, 8.2],
+    positions: [
+      [-7.2, 7.25],
+      [-6.3, 7.25],
+    ],
+  },
+  {
+    id: "reclamation-yard",
+    name: "RECLAMATION YARD",
+    route: 3,
+    approach: [-8.1, 32],
+    positions: [
+      [-13.55, 31.35],
+      [-13.55, 32.45],
+    ],
+  },
+  {
+    id: "tram-forecourt",
+    name: "TRAM FORECOURT",
+    route: 3,
+    approach: [-4.3, 41.1],
+    positions: [
+      [-4.7, 39.65],
+      [-3.75, 39.65],
+    ],
+  },
+] as const;
 export function insideDistrict(x: number, z: number, radius = 0): boolean {
   const b = DISTRICT_BOUNDS;
   return (
