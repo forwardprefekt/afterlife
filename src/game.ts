@@ -1,5 +1,11 @@
 import { JOBS } from "./content";
 import type { InteractionId, JobId } from "./content";
+import {
+  createInvestigationState,
+  performInvestigation,
+} from "./investigation";
+import type { InvestigationState, InvestigationStep } from "./investigation";
+import type { LandmarkId } from "./content";
 export type { InteractionId, JobId } from "./content";
 
 export type Ending =
@@ -47,6 +53,7 @@ export interface GameState {
   exposureSeconds: number;
   ledger: Transaction[];
   ending: Ending | null;
+  investigation: InvestigationState;
 }
 export type GameAction =
   | { type: "begin" }
@@ -58,7 +65,9 @@ export type GameAction =
   | { type: "recognition-inspection" }
   | { type: "release-custody" }
   | { type: "borrow" }
-  | { type: "settle" };
+  | { type: "settle" }
+  | { type: "investigate"; step: InvestigationStep; at: LandmarkId }
+  | { type: "track-investigation"; tracking: boolean };
 export interface ActionResult {
   ok: boolean;
   message: string;
@@ -82,6 +91,7 @@ export function createInitialState(): GameState {
     exposureSeconds: 0,
     ledger: [],
     ending: null,
+    investigation: createInvestigationState(),
   };
 }
 
@@ -156,6 +166,24 @@ export function dispatch(state: GameState, action: GameAction): ActionResult {
       message: "Resident in custody. Wait for sentence processing and release.",
     };
   switch (action.type) {
+    case "investigate":
+      return performInvestigation(state, action.step, action.at);
+    case "track-investigation":
+      if (
+        !state.investigation.accepted ||
+        (action.tracking && state.investigation.exposed)
+      )
+        return {
+          ok: false,
+          message: "There is no unfinished investigation to track.",
+        };
+      state.investigation.tracking = action.tracking;
+      return {
+        ok: true,
+        message: action.tracking
+          ? "Tracking Under the Compact. Your work assignment is kept."
+          : "Tracking the workday. Your investigation and access are kept.",
+      };
     case "recognition-inspection":
       if (state.activeJob?.id !== "offgrid-relay")
         return {

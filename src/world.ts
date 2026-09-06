@@ -17,11 +17,21 @@ import type { StreetLifeStatus } from "./street-life";
 import type { ActionResult, GameState } from "./game";
 import { createJail, JAIL_EXIT } from "./jail";
 import { createCompound } from "./compound";
+import { createInvestigationWorld } from "./investigation-world";
+import {
+  INVESTIGATION_SITES,
+  INVESTIGATION_PLACES,
+  siteAccessReason,
+} from "./investigation";
+import type { InvestigationSite, InvestigationState } from "./investigation";
 
 export type WorldAction =
   | { type: "enter-habitat" }
   | { type: "exit-habitat" }
   | { type: "ride-elevator"; floor: HabitatFloor }
+  | { type: "enter-investigation"; site: InvestigationSite }
+  | { type: "exit-investigation" }
+  | { type: "ride-depths"; site: "bunker" | "detention" | "routing" }
   | { type: "select-furniture"; item?: FurnitureId }
   | {
       type: "move-furniture";
@@ -45,6 +55,7 @@ export interface WorldView {
   custody?: GameState["custody"];
   totalYearsServed?: number;
   showerConsumed?: boolean;
+  investigation?: InvestigationState;
 }
 export interface WorldSnapshot {
   x: number;
@@ -53,7 +64,7 @@ export interface WorldSnapshot {
   nearest?: Landmark;
   exposed: boolean;
   zoom: number;
-  area: "street" | "habitat" | "jail";
+  area: "street" | "habitat" | "jail" | "investigation";
   floor: HabitatFloor;
   riding: boolean;
   furniture: readonly Furniture[];
@@ -61,6 +72,9 @@ export interface WorldSnapshot {
   places: readonly Landmark[];
   security: StreetLifeStatus;
   jailExitReachable: boolean;
+  investigationSite?: InvestigationSite;
+  depth: number;
+  destination?: Landmark;
 }
 
 export function createWorld(container: HTMLElement) {
@@ -77,7 +91,8 @@ export function createWorld(container: HTMLElement) {
   const scene = new THREE.Scene();
   const exterior = new THREE.Group();
   scene.add(exterior);
-  let area: "street" | "habitat" | "jail" = "street";
+  let area: WorldSnapshot["area"] = "street";
+  let investigationState: InvestigationState | undefined;
   let nearby: Landmark | undefined;
   scene.fog = new THREE.FogExp2(0x18252b, 0.009);
   scene.add(new THREE.HemisphereLight(0xd0e8e9, 0x495252, 2.8));
@@ -1012,6 +1027,42 @@ export function createWorld(container: HTMLElement) {
   exterior.add(compound.group);
   collisions.push(...compound.collisions);
   fadeGroups.push(...compound.houses);
+  // Private access ports stay inside the estates' existing ground footprints.
+  for (const [house, x, z] of [
+    [compound.houses[0], 30, 22.25],
+    [compound.houses[1], 28, 38.25],
+  ] as const) {
+    const casing = mats.dark.clone(),
+      display = mats.teal.clone();
+    house.materials.push(casing, display);
+    box(x, 0.8, z, 0.45, 1.6, 0.25, casing, house.group);
+    box(x, 1.23, z + 0.14, 0.34, 0.4, 0.035, display, house.group);
+    sign(
+      "PRIVATE MODEL PORT",
+      x,
+      1.93,
+      z + 0.15,
+      1.55,
+      0.3,
+      false,
+      "#d9cba8",
+      house,
+    );
+    house.box.setFromObject(house.group);
+  }
+  // A walkable maintenance hatch, not another obstacle in the tram crossing.
+  box(-11, 0.031, 40, 1.6, 0.024, 1.8, mats.dark).castShadow = false;
+  for (let bar = 0; bar < 6; bar++)
+    box(
+      -11.63 + bar * 0.25,
+      0.048,
+      40,
+      0.045,
+      0.009,
+      1.65,
+      mats.oxidized,
+    ).castShadow = false;
+  sign("SERVICE / B9", -11, 0.057, 39.38, 1.25, 0.32).rotation.x = -Math.PI / 2;
   // Civic art uses the same owned-material fading and static batches as buildings.
   // Only the plinths touch the ground; tall overhangs leave adjacent paths open.
   const sculptureGroups: typeof fadeGroups = [];
@@ -1529,10 +1580,17 @@ export function createWorld(container: HTMLElement) {
   habitat.group.visible = false;
   const jail = createJail();
   exterior.add(jail.vehicle);
+  const investigation = createInvestigationWorld();
+  investigation.group.visible = false;
+  const investigationTargets = new Map<LandmarkId, InvestigationSite>();
+  for (const site of Object.keys(INVESTIGATION_SITES) as InvestigationSite[])
+    for (const place of INVESTIGATION_PLACES[site])
+      if (place.id !== "deep-lift") investigationTargets.set(place.id, site);
   const areaGroups = [
     ["street", exterior],
     ["habitat", habitat.group],
     ["jail", jail.group],
+    ["investigation", investigation.group],
   ] as const;
   let custodyPhase: NonNullable<GameState["custody"]>["phase"] | undefined;
   const streetOfficerPosition: [number, number, number] = [0, 0, 0];
@@ -1603,11 +1661,11 @@ export function createWorld(container: HTMLElement) {
     "wheel",
     (e) => {
       e.preventDefault();
-      if ((paused && playing) || habitat.riding) return;
+      if ((paused && playing) || habitat.riding || investigation.riding) return;
       zoom = THREE.MathUtils.clamp(
         zoom + e.deltaY * 0.012,
-        area === "habitat" ? 6 : 9,
-        area === "habitat" ? 16 : 34,
+        area === "street" ? 9 : 6,
+        area === "street" ? 34 : 18,
       );
       resize();
     },
@@ -1637,6 +1695,8 @@ export function createWorld(container: HTMLElement) {
     player.group.visible = true;
     exterior.visible = true;
     habitat.group.visible = false;
+    investigation.group.visible = false;
+    investigation.reset();
     interiorMarkers.visible = false;
     habitat.reset();
     streetLife.reset();
@@ -1651,7 +1711,82 @@ export function createWorld(container: HTMLElement) {
       habitat.setEditing(undefined);
       return { ok: true, message: "Arrangement closed." };
     }
-    if (!playing || habitat.riding || custodyPhase)
+    if (
+      action.type === "enter-investigation" ||
+      action.type === "exit-investigation" ||
+      action.type === "ride-depths"
+    ) {
+      if (
+        !playing ||
+        habitat.riding ||
+        investigation.riding ||
+        custodyPhase ||
+        !investigationState
+      )
+        return {
+          ok: false,
+          message: "Wait for transport or processing to finish.",
+        };
+      if (action.type === "enter-investigation") {
+        const site = INVESTIGATION_SITES[action.site];
+        if (
+          area !== "street" ||
+          !site.streetEntry ||
+          nearby?.id !== site.streetEntry
+        )
+          return {
+            ok: false,
+            message: "Use this location's exterior access point.",
+          };
+        const reason = siteAccessReason(investigationState, action.site);
+        if (reason) return { ok: false, message: reason };
+        investigation.enter(action.site, player.group.position);
+        area = "investigation";
+        investigation.group.visible = true;
+        exterior.visible = false;
+        zoom = 11;
+      } else if (area !== "investigation")
+        return {
+          ok: false,
+          message: "Enter the private infrastructure first.",
+        };
+      else if (action.type === "exit-investigation") {
+        const site = INVESTIGATION_SITES[investigation.site];
+        if (!site.exit || nearby?.id !== site.exit || !site.streetEntry)
+          return {
+            ok: false,
+            message: "Use the lift to reach the surface exit.",
+          };
+        const exit = LANDMARKS.find((place) => place.id === site.streetEntry)!;
+        player.group.position.set(exit.position[0], 0, exit.position[2] + 0.5);
+        area = "street";
+        exterior.visible = true;
+        investigation.group.visible = false;
+        zoom = 13;
+      } else {
+        if (nearby?.id !== "deep-lift")
+          return { ok: false, message: "Walk to the deep service lift." };
+        const reason = siteAccessReason(investigationState, action.site);
+        if (reason) return { ok: false, message: reason };
+        const result = investigation.ride(action.site, player.group.position);
+        if (!result.ok) return result;
+      }
+      nearby = undefined;
+      keys.clear();
+      interiorMarkers.visible = false;
+      look.copy(player.group.position);
+      resize();
+      return {
+        ok: true,
+        message:
+          action.type === "ride-depths"
+            ? "Lift authorized. Cabin doors interlocked."
+            : area === "street"
+              ? "Back on the public service route."
+              : INVESTIGATION_SITES[investigation.site].name,
+      };
+    }
+    if (!playing || habitat.riding || investigation.riding || custodyPhase)
       return {
         ok: false,
         message: "Wait for transport or processing to finish.",
@@ -1729,11 +1864,45 @@ export function createWorld(container: HTMLElement) {
       player.group.position,
     );
   }
+  function resolveDestination(
+    objective: LandmarkId,
+    places: readonly Landmark[],
+  ) {
+    if (custodyPhase || habitat.riding || investigation.riding)
+      return undefined;
+    const targetSite = investigationTargets.get(objective);
+    let id: LandmarkId | undefined = objective;
+    if (area === "street") {
+      id = targetSite
+        ? (INVESTIGATION_SITES[targetSite].streetEntry ?? "bunker-entrance")
+        : objective === "home"
+          ? "habitat-entry"
+          : objective;
+    } else if (area === "habitat") {
+      const homeward = objective === "home" || objective === "work-terminal";
+      id =
+        homeward && habitat.floor === 3
+          ? "home"
+          : homeward || habitat.floor !== 0
+            ? "elevator"
+            : "habitat-exit";
+    } else if (area === "investigation" && targetSite !== investigation.site) {
+      const site = INVESTIGATION_SITES[investigation.site];
+      id =
+        !site.exit ||
+        (investigation.site === "bunker" &&
+          (targetSite === "detention" || targetSite === "routing"))
+          ? "deep-lift"
+          : site.exit;
+    }
+    return places.find((place) => place.id === id);
+  }
   function update(delta: number, view: WorldView): WorldSnapshot {
     const dt = Math.min(Math.max(delta, 0), 0.05);
     time += dt;
     paused = view.paused;
     playing = view.playing;
+    investigationState = view.investigation;
     const nextCustody = view.custody?.phase;
     if (nextCustody !== custodyPhase) {
       keys.clear();
@@ -1747,12 +1916,14 @@ export function createWorld(container: HTMLElement) {
         area = "street";
         exterior.visible = true;
         habitat.group.visible = false;
+        investigation.group.visible = false;
         interiorMarkers.visible = false;
         zoom = 13;
       } else if (nextCustody) {
         area = "jail";
         exterior.visible = false;
         habitat.group.visible = false;
+        investigation.group.visible = false;
         zoom = 9;
         player.group.position.set(
           nextCustody === "release" ? -1 : 1,
@@ -1784,6 +1955,13 @@ export function createWorld(container: HTMLElement) {
         player.group.position,
         view.showerConsumed,
       );
+    if (investigationState)
+      investigation.update(
+        Math.min(Math.max(delta, 0), 0.1),
+        paused,
+        player.group.position,
+        investigationState,
+      );
     if (paused) keys.clear();
     let sx = 0,
       sy = 0;
@@ -1791,6 +1969,7 @@ export function createWorld(container: HTMLElement) {
       !paused &&
       playing &&
       !habitat.riding &&
+      !investigation.riding &&
       (!nextCustody || nextCustody === "release")
     ) {
       sx =
@@ -1808,6 +1987,9 @@ export function createWorld(container: HTMLElement) {
       if (area === "habitat") {
         if (!habitat.blocked(p.x + dx, p.z)) p.x += dx;
         if (!habitat.blocked(p.x, p.z + dz)) p.z += dz;
+      } else if (area === "investigation") {
+        if (!investigation.blocked(p.x + dx, p.z)) p.x += dx;
+        if (!investigation.blocked(p.x, p.z + dz)) p.z += dz;
       } else if (area === "jail") {
         if (!jail.blocked(p.x + dx, p.z)) p.x += dx;
         if (!jail.blocked(p.x, p.z + dz)) p.z += dz;
@@ -1821,6 +2003,9 @@ export function createWorld(container: HTMLElement) {
     }
     if (area === "habitat") {
       if (!habitat.riding) p.y = habitat.floor * 4;
+    } else if (area === "investigation") {
+      if (!investigation.riding)
+        p.y = INVESTIGATION_SITES[investigation.site].depth;
     } else if (area === "jail") {
       p.y = nextCustody === "release" ? 0 : 0.28;
     } else
@@ -1838,7 +2023,8 @@ export function createWorld(container: HTMLElement) {
     ring.rotation.z = -player.group.rotation.y;
     pack.visible = view.carrying;
     desired.copy(p);
-    look.lerp(desired, 1 - Math.exp(-dt * 4));
+    if (investigation.riding) look.copy(p);
+    else look.lerp(desired, 1 - Math.exp(-dt * 4));
     camera.position.copy(look).add(offset);
     camera.lookAt(look);
     target.copy(p);
@@ -1879,17 +2065,27 @@ export function createWorld(container: HTMLElement) {
     }
     let nearest: Landmark | undefined,
       best = 1.5;
+    const places =
+      area === "habitat"
+        ? habitat.places
+        : area === "investigation"
+          ? investigation.places
+          : area === "jail"
+            ? []
+            : streetPlaces;
+    const riding = habitat.riding || investigation.riding;
+    const destination = resolveDestination(
+      view.objective ?? "work-terminal",
+      places,
+    );
     for (const { place, mesh } of markers) {
       const dist = Math.hypot(p.x - place.position[0], p.z - place.position[2]);
       mesh.visible =
         area === "street" &&
-        (dist < 8 ||
-          place.id === view.objective ||
-          (view.objective === "home" && place.id === "habitat-entry") ||
-          !playing);
-      mesh.material.opacity = place.id === view.objective ? 0.95 : 0.45;
+        (dist < 8 || place.id === destination?.id || !playing);
+      mesh.material.opacity = place.id === destination?.id ? 0.95 : 0.45;
       mesh.scale.setScalar(
-        place.id === view.objective ? 1.4 + Math.sin(time * 3) * 0.1 : 1,
+        place.id === destination?.id ? 1.4 + Math.sin(time * 3) * 0.1 : 1,
       );
       if (
         area === "street" &&
@@ -1900,15 +2096,15 @@ export function createWorld(container: HTMLElement) {
         best = dist;
       }
     }
-    interiorMarkers.visible = area === "habitat" && !habitat.riding;
-    const places =
-      area === "habitat" ? habitat.places : area === "jail" ? [] : streetPlaces;
-    if (area === "habitat")
+    interiorMarkers.visible =
+      (area === "habitat" || area === "investigation") && !riding;
+    if (interiorMarkers.visible)
       for (let i = 0; i < interiorMarkers.children.length; i++) {
         const place = places[i],
           marker = interiorMarkers.children[i];
         marker.visible = Boolean(place);
         if (!place) continue;
+        marker.scale.setScalar(place.id === destination?.id ? 1.4 : 1);
         marker.position.set(
           place.position[0],
           place.position[1] + 0.055,
@@ -1941,7 +2137,7 @@ export function createWorld(container: HTMLElement) {
       );
       if (distance <= best && Math.abs(p.y) <= 0.75) nearest = streetOfficer;
     }
-    if (nextCustody) nearest = undefined;
+    if (nextCustody || riding) nearest = undefined;
     nearby = nearest;
     const exposed = area === "street" && insideScanner(p.x, p.z) && p.y < 0.75;
     scanMaterial.opacity =
@@ -1949,8 +2145,12 @@ export function createWorld(container: HTMLElement) {
     renderer.domElement.dataset.position = `${p.x.toFixed(3)},${p.y.toFixed(3)},${p.z.toFixed(3)}`;
     renderer.domElement.dataset.zoom = String(zoom);
     renderer.domElement.dataset.area = area;
-    renderer.domElement.dataset.floor = String(habitat.floor);
-    renderer.domElement.dataset.riding = String(habitat.riding);
+    renderer.domElement.dataset.floor =
+      area === "investigation" ? investigation.site : String(habitat.floor);
+    renderer.domElement.dataset.riding = String(riding);
+    renderer.domElement.dataset.depth = String(
+      area === "investigation" ? Math.max(0, -p.y) : 0,
+    );
     return {
       x: p.x,
       y: p.y,
@@ -1960,7 +2160,7 @@ export function createWorld(container: HTMLElement) {
       zoom,
       area,
       floor: habitat.floor,
-      riding: habitat.riding,
+      riding,
       furniture: habitat.furniture,
       roomBounds: ROOM_BOUNDS,
       places,
@@ -1969,20 +2169,26 @@ export function createWorld(container: HTMLElement) {
         area === "jail" &&
         nextCustody === "release" &&
         Math.hypot(p.x - JAIL_EXIT.x, p.z - JAIL_EXIT.z) <= 1.5,
+      investigationSite:
+        area === "investigation" ? investigation.site : undefined,
+      depth: area === "investigation" ? Math.max(0, -p.y) : 0,
+      destination,
     };
   }
   let shadowArea: WorldSnapshot["area"] | undefined;
+  let shadowDepth: number | undefined;
   return {
     update,
     reset,
     act,
     render: () => {
       renderer.shadowMap.autoUpdate = area !== "street";
-      if (shadowArea !== area) {
+      const depth = area === "investigation" ? player.group.position.y : 0;
+      if (shadowArea !== area || shadowDepth !== depth) {
         const center = area === "street" ? 16 : 0;
         const extent = area === "street" ? 50 : 24;
-        sun.position.set(center - 32, 56, center + 24);
-        sun.target.position.set(center, 0, center);
+        sun.position.set(center - 32, depth + 56, center + 24);
+        sun.target.position.set(center, depth, center);
         sun.shadow.camera.left = sun.shadow.camera.bottom = -extent;
         sun.shadow.camera.right = sun.shadow.camera.top = extent;
         sun.shadow.camera.updateProjectionMatrix();
@@ -1990,6 +2196,7 @@ export function createWorld(container: HTMLElement) {
       }
       for (const part of playerParts) part.castShadow = area !== "street";
       shadowArea = area;
+      shadowDepth = depth;
       renderer.render(scene, camera);
     },
   };

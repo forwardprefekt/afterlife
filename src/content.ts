@@ -1,3 +1,6 @@
+import { INVESTIGATION_ENTRIES } from "./investigation";
+import type { InvestigationLandmarkId } from "./investigation";
+
 export type JobId =
   "stair-delivery" | "pump-audit" | "meter-witness" | "offgrid-relay";
 export type InteractionId =
@@ -15,6 +18,7 @@ export type InteractionId =
   | "shower";
 export type LandmarkId =
   | InteractionId
+  | InvestigationLandmarkId
   | "municipal-notice"
   | "neighbor"
   | "tower-display"
@@ -315,8 +319,9 @@ export const LANDMARKS: Landmark[] = [
     position: [44.5, 0, 37],
     text: "An armored stair descends beneath the estates. The blast door is sealed. CONTINUITY IS A PRIVILEGE, reads the plaque. No resident-level key is accepted here.",
     details:
-      "The public service lane remains open between the freight depot and grid meter. The bunker and the two houses are not enterable.",
+      "The public service lane stays open between the freight depot and grid meter. Private maintenance consoles govern access to the estates and the infrastructure below. A resident key cannot authorize them.",
   },
+  ...INVESTIGATION_ENTRIES,
 ];
 export const landmark = (id: LandmarkId) =>
   LANDMARKS.find((place) => place.id === id)!;
