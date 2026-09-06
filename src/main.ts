@@ -8,6 +8,7 @@ import {
 import { createUI } from "./ui";
 import { JOBS } from "./content";
 import type { LandmarkId } from "./content";
+import { INVESTIGATION_ACTIONS, investigationObjective } from "./investigation";
 import "@fontsource/barlow-condensed/latin-700.css";
 import "@fontsource/barlow-condensed/latin-800.css";
 import "@fontsource/ibm-plex-mono/latin-400.css";
@@ -16,6 +17,7 @@ import "@fontsource/inter/latin-400.css";
 import "@fontsource/inter/latin-600.css";
 import "@fontsource/inter/latin-800.css";
 import "./style.css";
+import "./investigation.css";
 
 const root = document.querySelector<HTMLDivElement>("#ui")!;
 try {
@@ -27,8 +29,22 @@ try {
     playing: false,
     paused: true,
     carrying: false,
+    investigation: state.investigation,
   });
   let last = performance.now();
+  function objective(): LandmarkId {
+    const active = state.activeJob;
+    return (
+      investigationObjective(state) ??
+      (active
+        ? active.stage === "pickup"
+          ? "parcel-depot"
+          : JOBS[active.id].destination
+        : state.hours === 0 || state.keyFrozen
+          ? "home"
+          : "work-terminal")
+    );
+  }
   const ui = createUI(
     root,
     () => state,
@@ -41,7 +57,14 @@ try {
       else if (action.type === "interact") required = action.at;
       else if (action.type === "accept-job" && action.jobId === "offgrid-relay")
         required = "underground-contact";
-      else if (action.type === "recognition-inspection") {
+      else if (action.type === "investigate") {
+        required = INVESTIGATION_ACTIONS[action.step].at;
+        if (action.at !== required)
+          return {
+            ok: false,
+            message: "This operation requires a different access point.",
+          };
+      } else if (action.type === "recognition-inspection") {
         if (at !== "street-officer" && at !== "indoor-officer")
           return {
             ok: false,
@@ -69,12 +92,16 @@ try {
       last = performance.now();
     },
     (action) => {
+      if (state.phase !== "playing")
+        return { ok: false, message: "There is no active shift." };
       const result = world.act(action);
       snapshot = world.update(0, {
-        playing: state.phase !== "intro",
+        playing: true,
         custody: state.custody,
         totalYearsServed: state.totalYearsServed,
         showerConsumed: state.showerConsumed,
+        investigation: state.investigation,
+        objective: objective(),
         paused: ui.paused,
         carrying: Boolean(
           state.activeJob?.stage === "deliver" &&
@@ -96,19 +123,14 @@ try {
       custody: state.custody,
       totalYearsServed: state.totalYearsServed,
       showerConsumed: state.showerConsumed,
+      investigation: state.investigation,
       paused: ui.paused,
       carrying: Boolean(
         active &&
         active.stage === "deliver" &&
         (active.id === "stair-delivery" || active.id === "offgrid-relay"),
       ),
-      objective: active
-        ? active.stage === "pickup"
-          ? "parcel-depot"
-          : JOBS[active.id].destination
-        : state.hours === 0 || state.keyFrozen
-          ? "home"
-          : undefined,
+      objective: objective(),
     });
     const wasFrozen = state.keyFrozen;
     if (!ui.paused && !document.hidden)

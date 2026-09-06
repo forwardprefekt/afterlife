@@ -10,12 +10,24 @@ import { CUSTODY_DURATIONS, jobDisabledReason } from "./game";
 import type { ActionResult, GameAction, GameState } from "./game";
 import type { WorldAction, WorldSnapshot } from "./world";
 import type { FurnitureId, HabitatFloor } from "./habitat";
+import {
+  INVESTIGATION_ACTIONS,
+  INVESTIGATION_SITES,
+  nextInvestigationStep,
+} from "./investigation";
+import type { InvestigationSite, InvestigationStep } from "./investigation";
+import {
+  renderInvestigationJournal,
+  renderInvestigationActions,
+  renderInvestigationEpilogue,
+} from "./investigation-ui";
 
 type Pane =
   | "none"
   | "work"
   | "wallet"
   | "citizen"
+  | "investigation"
   | "place"
   | "settle"
   | "pause"
@@ -87,6 +99,11 @@ export function createUI(
   const objectiveLabel = root.querySelector("#objective-label")!,
     objectiveTitle = root.querySelector("#objective-title")!,
     objectiveDetail = root.querySelector("#objective-detail")!;
+  const objectiveButton = root.querySelector<HTMLButtonElement>(
+    ".objective > button",
+  )!;
+  const handsetButton =
+    root.querySelector<HTMLButtonElement>(".handset-button")!;
   root.insertAdjacentHTML(
     "beforeend",
     `<div id="ambient" class="ambient" role="status" aria-live="polite" hidden><label>PUBLIC ADDRESS / CIVIC DRONE</label><p></p></div><div id="street-status" class="street-status"></div><div id="housing-banner" class="housing-banner" hidden></div><div id="ride-indicator" class="ride-indicator" hidden><label>HABITAT 09 / PASSENGER LIFT</label><strong>IN TRANSIT</strong><p>Keep clear of the doors.</p></div>`,
@@ -195,10 +212,15 @@ export function createUI(
       panels.innerHTML = `<section class="intro"><div class="eyebrow"><span class="live-dot"></span> ONE DISTRICT. SIX HOURS. YOUR ROOM.</div><h1>A living.<br>Not a life.</h1><p class="subtitle">A day in the Meridian Compact</p><p>Your stipend has cleared. Housing is due at shift end. Six work hours remain.</p><button class="primary" data-command="begin">Begin shift <span>↗</span></button><small>One playable day. Reloading starts a new day.</small><div class="intro-footnote">A FICTIONAL FUTURE. AN ORDINARY WORKDAY.</div></section><div class="scene-note"><span>09 / MERIDIAN</span><p>Everything you need.<br>Nothing you own.</p></div>`;
     } else if (s.phase === "ended") {
       const copy = endingCopy[s.ending!];
-      panels.innerHTML = `<div class="scrim"><section class="ending panel" role="dialog" aria-modal="true" aria-labelledby="ending-title"><div class="panel-eyebrow">SHIFT 001 / SETTLEMENT COMPLETE <span>${s.ending!.toUpperCase()}</span></div><div class="ending-grid"><div class="ending-story"><h1 id="ending-title">${copy[0]}</h1><h3>${copy[1]}</h3><p>${copy[2]}</p><div class="settlement-stats"><div><label>REMAINING</label><strong>${s.credits}<em> AC</em></strong></div><div><label>DEBT</label><strong>${s.loan}<em> AC</em></strong></div><div><label>HOURS</label><strong>${s.hours}</strong></div></div><small>RATION ${s.rationConsumed ? "CONSUMED" : "NOT CONSUMED"}<br>${s.citizenship.toUpperCase()} · KEY ${s.keyFrozen ? "FROZEN" : "ACTIVE"}</small><button class="primary" data-command="restart">Restart day <span>↗</span></button><small>One day, another choice. No second day is simulated.</small></div><div class="ending-record"><label>ISSUER-CONTROLLED SETTLEMENT</label>${ledger(s)}<label>COMPLETED ASSIGNMENTS · ${s.completedJobs.length}</label><ul>${s.completedJobs.map((id) => `<li>${JOBS[id].name}</li>`).join("") || "<li>None</li>"}</ul></div></div></section></div>`;
+      panels.innerHTML = `<div class="scrim"><section class="ending panel" role="dialog" aria-modal="true" aria-labelledby="ending-title"><div class="panel-eyebrow">SHIFT 001 / SETTLEMENT COMPLETE <span>${s.ending!.toUpperCase()}</span></div><div class="ending-grid"><div class="ending-story"><h1 id="ending-title">${copy[0]}</h1><h3>${copy[1]}</h3><p>${copy[2]}</p><div class="settlement-stats"><div><label>REMAINING</label><strong>${s.credits}<em> AC</em></strong></div><div><label>DEBT</label><strong>${s.loan}<em> AC</em></strong></div><div><label>HOURS</label><strong>${s.hours}</strong></div></div><small>RATION ${s.rationConsumed ? "CONSUMED" : "NOT CONSUMED"}<br>${s.citizenship.toUpperCase()} · KEY ${s.keyFrozen ? "FROZEN" : "ACTIVE"}</small><button class="primary" data-command="restart">Restart day <span>↗</span></button><small>Restart clears the day, investigation and acquired access.</small></div><div class="ending-record"><label>ISSUER-CONTROLLED SETTLEMENT</label>${ledger(s)}<label>COMPLETED ASSIGNMENTS · ${s.completedJobs.length}</label><ul>${s.completedJobs.map((id) => `<li>${JOBS[id].name}</li>`).join("") || "<li>None</li>"}</ul>${renderInvestigationEpilogue(s)}</div></div></section></div>`;
     } else if (pane === "none") panels.innerHTML = "";
     else if (pane === "furniture") panels.innerHTML = renderFurniture();
-    else if (pane === "work" || pane === "wallet" || pane === "citizen") {
+    else if (
+      pane === "work" ||
+      pane === "wallet" ||
+      pane === "citizen" ||
+      pane === "investigation"
+    ) {
       let content = "";
       if (pane === "work") {
         content = `<div class="app-heading"><h2>Labor exchange</h2><p>Human presence. Machine purpose.</p></div>${s.keyFrozen ? '<div class="warning">ACCESS DENIED<br>Citizenship revoked. Your work key is frozen.</div>' : ""}${s.activeJob ? `<div class="active-assignment"><label>ACTIVE ASSIGNMENT</label><h3>${JOBS[s.activeJob.id].name}</h3><p>${s.activeJob.stage === "pickup" ? `Collect the parcel at ${landmark("parcel-depot").name}.` : `Deliver / ${landmark(JOBS[s.activeJob.id].destination).name}`}</p><button data-command="abandon">Abandon job</button></div>` : ""}<div class="job-list">${Object.values(
@@ -214,13 +236,14 @@ export function createUI(
           )}</div><div class="quiet-note">Other work travels by word of mouth. Find Mara on the west service route after a civic job.</div>`;
       } else if (pane === "wallet")
         content = `<div class="app-heading"><h2>Wallet</h2><p>Issuer-controlled settlement.</p></div><div class="wallet-balance"><label>AVAILABLE BALANCE ${s.keyFrozen ? " / FROZEN" : ""}</label><strong>${s.credits}<em> AC</em></strong><p>Housing due: 40 AC · Debt due: ${s.loan} AC</p></div><div class="quiet-note">Employer-issued AI credits. The issuer authorizes every transfer, including those arranged off-network.</div><label class="section-label">GOVERNMENT-ADMINISTERED LEDGER</label>${ledger(s)}`;
-      else
+      else if (pane === "citizen")
         content = `<div class="app-heading"><h2>Citizen record</h2><p>Recognition is a service. Not a right.</p></div><div class="citizen-card"><div class="portrait">0806</div><label>MERIDIAN RESIDENT / CLASS C</label><h3>${s.citizenship.toUpperCase()}</h3><small>TRANSACTION KEY: ${s.keyFrozen ? "FROZEN" : "ACTIVE"}<br>TOTAL YEARS SERVED: ${s.totalYearsServed}</small></div><h3>A revocable room.</h3><p>Your housing license costs 40 credits at settlement. Your ration costs another 6. Walking and reading do not consume work hours; completed assignments do.</p><h3>A conditional border.</h3><p>Regional transit requires recognized citizenship. Participating compacts share identity screening and surveillance records. A completed consciousness sentence does not restore your key. Years served persist until you restart this day.</p><div class="quiet-note">The Meridian Compact and its institutions are fictional. This is not a description of real US law or history.</div>`;
-      panels.innerHTML = `<section class="handset panel" role="dialog" aria-label="Civic handset"><div class="handset-top"><span>MERIDIAN / PERSONAL TERMINAL</span><button class="close" data-command="close" aria-label="Close handset">×</button></div><div class="tabs" role="tablist">${(["work", "wallet", "citizen"] as const).map((name) => `<button role="tab" aria-selected="${pane === name}" data-command="${name}">${name[0].toUpperCase() + name.slice(1)}</button>`).join("")}</div><div class="handset-content">${content}</div><div class="handset-bottom"><i></i> ↑↓ SELECT · ENTER CONFIRM <span>TAB CLOSES</span></div></section>`;
+      else content = renderInvestigationJournal(s);
+      panels.innerHTML = `<section class="handset panel has-investigation" role="dialog" aria-label="Civic handset"><div class="handset-top"><span>MERIDIAN / PERSONAL TERMINAL</span><button class="close" data-command="close" aria-label="Close handset">×</button></div><div class="tabs" role="tablist">${(["work", "wallet", "citizen", "investigation"] as const).map((name) => `<button role="tab" aria-selected="${pane === name}" data-command="${name}">${name === "investigation" ? "Casefile" : name[0].toUpperCase() + name.slice(1)}</button>`).join("")}</div><div class="handset-content">${content}</div><div class="handset-bottom"><i></i> ↑↓ SELECT · ENTER CONFIRM <span>TAB CLOSES</span></div></section>`;
     } else if (pane === "pause")
-      panels.innerHTML = `<div class="scrim"><section class="dialog panel" role="dialog" aria-modal="true" aria-label="Shift paused"><div class="panel-eyebrow">SHIFT PAUSED</div><h2>Take a moment.</h2><p>Movement, surveillance and custody processing are paused while a menu is open. Work hours are spent on assignments, not on walking or reading.</p><button class="primary" data-command="close">Resume shift</button><button data-command="restart">Restart day</button><small>Restart discards this shift, room arrangement and cumulative years served. Reloading also begins a new day.</small></section></div>`;
+      panels.innerHTML = `<div class="scrim"><section class="dialog panel" role="dialog" aria-modal="true" aria-label="Shift paused"><div class="panel-eyebrow">SHIFT PAUSED</div><h2>Take a moment.</h2><p>Movement, surveillance, custody and lifts pause while a menu is open. Work hours are spent on assignments, not on walking or reading.</p><button class="primary" data-command="close">Resume shift</button><button data-command="restart">Restart day</button><small>Restart discards this shift, investigation, room arrangement and cumulative years served. Reloading also begins a new day.</small></section></div>`;
     else if (pane === "settle")
-      panels.innerHTML = `<div class="scrim"><section class="dialog panel" role="dialog" aria-modal="true" aria-labelledby="settle-title"><div class="panel-eyebrow">HOUSING LICENSE / H-09</div><h2 id="settle-title">Close the day?</h2><p>Unfinished assignments are discarded without pay. Housing is settled before any loan repayment.</p><dl class="bill"><div><dt>Available balance</dt><dd>${s.credits} AC</dd></div><div><dt>Housing charge</dt><dd>40 AC</dd></div><div><dt>Loan due</dt><dd>${s.loan} AC</dd></div><div><dt>Daily ration</dt><dd>${s.rationConsumed ? "Consumed" : "Not consumed"}</dd></div></dl>${s.keyFrozen ? '<div class="warning">Recognition revoked. No funds can be transferred.</div>' : ""}<button class="primary" data-command="settle">Confirm settlement</button><button data-command="close">Not yet</button></section></div>`;
+      panels.innerHTML = `<div class="scrim"><section class="dialog panel" role="dialog" aria-modal="true" aria-labelledby="settle-title"><div class="panel-eyebrow">HOUSING LICENSE / H-09</div><h2 id="settle-title">Close the day?</h2><p>Unfinished assignments are discarded without pay. Housing is settled before any loan repayment.</p>${s.investigation.accepted && !s.investigation.exposed ? '<div class="warning">Your investigation is unfinished. Ending the shift closes it without transmitting the remaining evidence.</div>' : ""}<dl class="bill"><div><dt>Available balance</dt><dd>${s.credits} AC</dd></div><div><dt>Housing charge</dt><dd>40 AC</dd></div><div><dt>Loan due</dt><dd>${s.loan} AC</dd></div><div><dt>Daily ration</dt><dd>${s.rationConsumed ? "Consumed" : "Not consumed"}</dd></div></dl>${s.keyFrozen ? '<div class="warning">Recognition revoked. No funds can be transferred.</div>' : ""}<button class="primary" data-command="settle">Confirm settlement</button><button data-command="close">Not yet</button></section></div>`;
     else if (place) {
       let action = "";
       if (place.id === "habitat-entry")
@@ -260,6 +283,16 @@ export function createUI(
             s.activeJob.stage === "pickup"))
       )
         action = `<button class="primary" data-command="interact">${s.activeJob.stage === "pickup" ? "Collect parcel" : JOBS[s.activeJob.id].verb}</button>`;
+      const storyActions = renderInvestigationActions(
+        place,
+        s,
+        worldState().investigationSite,
+      );
+      if (storyActions !== undefined)
+        action =
+          place.id === "underground-contact"
+            ? action + storyActions
+            : storyActions;
       const denied =
         place.id === "border-terminal" && s.citizenship === "revoked";
       panels.innerHTML = `<div class="scrim"><section class="dialog panel" role="dialog" aria-modal="true" aria-labelledby="place-title"><div class="panel-eyebrow">${place.sector}<button class="close" data-command="close" aria-label="Close interaction">×</button></div><h2 id="place-title">${place.name}</h2><p class="dialog-copy">${place.text}</p>${denied ? '<div class="warning">TRANSIT DENIED · CITIZENSHIP REVOKED<br>Record shared with participating compacts.</div>' : ""}${detailed && place.details ? `<p class="details-copy">${place.details}</p>` : ""}${action}${place.details && !detailed ? '<button class="text-button" data-command="details">Tell me more ↗</button>' : ""}<button class="text-button" data-command="close">Keep walking <kbd>ESC</kbd></button></section></div>`;
@@ -279,6 +312,58 @@ export function createUI(
       "button",
     );
     if (!button || button.disabled) return;
+    if (
+      button.dataset.storyStep &&
+      place &&
+      button.dataset.storyStep in INVESTIGATION_ACTIONS
+    ) {
+      execute(
+        {
+          type: "investigate",
+          step: button.dataset.storyStep as InvestigationStep,
+          at: place.id,
+        },
+        place.id,
+      );
+      return;
+    }
+    if (
+      button.dataset.storyEnter &&
+      button.dataset.storyEnter in INVESTIGATION_SITES
+    ) {
+      executeWorld(
+        {
+          type: "enter-investigation",
+          site: button.dataset.storyEnter as InvestigationSite,
+        },
+        true,
+      );
+      return;
+    }
+    if (
+      button.dataset.storyRide &&
+      ["bunker", "detention", "routing"].includes(button.dataset.storyRide)
+    ) {
+      executeWorld(
+        {
+          type: "ride-depths",
+          site: button.dataset.storyRide as "bunker" | "detention" | "routing",
+        },
+        true,
+      );
+      return;
+    }
+    if (button.dataset.storyExit) {
+      executeWorld({ type: "exit-investigation" }, true);
+      return;
+    }
+    if (button.dataset.storyTrack !== undefined) {
+      execute({
+        type: "track-investigation",
+        tracking: button.dataset.storyTrack === "true",
+      });
+      return;
+    }
     if (button.dataset.floor !== undefined) {
       executeWorld(
         {
@@ -347,6 +432,7 @@ export function createUI(
       case "work":
       case "wallet":
       case "citizen":
+      case "investigation":
         open(button.dataset.command);
         break;
       case "restart":
@@ -423,10 +509,12 @@ export function createUI(
         pane === "none" ||
         pane === "work" ||
         pane === "wallet" ||
-        pane === "citizen"
+        pane === "citizen" ||
+        pane === "investigation"
       ) {
         event.preventDefault();
-        if (pane === "none") open("work");
+        if (pane === "none")
+          open(state().investigation.tracking ? "investigation" : "work");
         else close();
       }
     } else if (
@@ -451,7 +539,7 @@ export function createUI(
     if (
       event.code === "Tab" &&
       pane !== "none" &&
-      !["work", "wallet", "citizen"].includes(pane)
+      !["work", "wallet", "citizen", "investigation"].includes(pane)
     ) {
       const buttons = [
         ...panels.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"),
@@ -526,8 +614,14 @@ export function createUI(
         release.disabled = !snapshot.jailExitReachable || this.paused;
       }
       nearest = snapshot.nearest;
-      const indoors = snapshot.area === "habitat";
+      const storySite = snapshot.investigationSite;
+      const inHabitat = snapshot.area === "habitat";
+      const indoors = inHabitat || snapshot.area === "investigation";
       root.classList.toggle("indoors", indoors);
+      root.classList.toggle(
+        "in-investigation",
+        snapshot.area === "investigation",
+      );
       root.classList.toggle("in-elevator", snapshot.riding);
       housingBanner.hidden = !indoors || s.phase !== "playing";
       const floorName =
@@ -536,16 +630,22 @@ export function createUI(
           : snapshot.floor === 1
             ? "01 / SLEEPING HALL"
             : "03 / BERTH 0806";
-      housingBanner.textContent = `HABITAT 09 · ${floorName}`;
+      const banner = storySite
+        ? `${INVESTIGATION_SITES[storySite].name.toUpperCase()} · ${snapshot.depth.toFixed(snapshot.riding ? 1 : 0)} M BELOW STREET`
+        : `HABITAT 09 · ${floorName}`;
+      if (housingBanner.textContent !== banner)
+        housingBanner.textContent = banner;
       rideIndicator.hidden = !snapshot.riding;
-      if (snapshot.riding)
-        rideIndicator.querySelector("p")!.textContent =
-          `Cabin elevation ${snapshot.y.toFixed(1)} m · Doors interlocked`;
-      mapHeading.innerHTML = indoors
-        ? `HABITAT 09 <span>${snapshot.floor === 0 ? "G" : `0${snapshot.floor}`}</span>`
-        : "SECTOR 09 <span>N ↗</span>";
+      if (snapshot.riding) {
+        rideIndicator.querySelector("label")!.textContent = storySite
+          ? "CONTINUITY / DEEP SERVICE LIFT"
+          : "HABITAT 09 / PASSENGER LIFT";
+        rideIndicator.querySelector("p")!.textContent = storySite
+          ? `${snapshot.depth.toFixed(1)} m below street · Cabin doors interlocked`
+          : `Cabin elevation ${snapshot.y.toFixed(1)} m · Doors interlocked`;
+      }
       streetStatus.hidden =
-        snapshot.area !== "street" || Boolean(custody) || s.phase !== "playing";
+        snapshot.area !== "street" || Boolean(custody) || this.paused;
       streetStatus.textContent = `${snapshot.security.crowdCount} RESIDENTS · ${snapshot.security.policeCount} COMPLIANCE · ${snapshot.security.droneCount} DRONES / ${snapshot.security.event}`;
       if (
         snapshot.security.notice &&
@@ -562,15 +662,24 @@ export function createUI(
       ambient.hidden =
         snapshot.area !== "street" ||
         Boolean(custody) ||
-        s.phase !== "playing" ||
+        this.paused ||
         performance.now() > ambientUntil ||
         s.exposureSeconds > 0;
       mapPlayer.setAttribute("cx", String(snapshot.x));
       mapPlayer.setAttribute("cy", String(snapshot.z));
-      const nextMapKey = indoors ? `indoor-${snapshot.floor}` : "street";
+      const nextMapKey = storySite
+        ? `story-${storySite}`
+        : inHabitat
+          ? `indoor-${snapshot.floor}`
+          : "street";
       if (mapKey !== nextMapKey) {
         mapKey = nextMapKey;
-        const expanded = indoors && snapshot.floor === 1;
+        const expanded = inHabitat && snapshot.floor === 1;
+        mapHeading.innerHTML = storySite
+          ? `PRIVATE / OFFLINE <span>${Math.abs(INVESTIGATION_SITES[storySite].depth)} M</span>`
+          : inHabitat
+            ? `HABITAT 09 <span>${snapshot.floor === 0 ? "G" : `0${snapshot.floor}`}</span>`
+            : "SECTOR 09 <span>N ↗</span>";
         mapSvg.setAttribute(
           "viewBox",
           indoors
@@ -579,35 +688,32 @@ export function createUI(
               : "-13 -11 26 22"
             : `${DISTRICT_BOUNDS.minX - 1} ${DISTRICT_BOUNDS.minZ - 1} ${DISTRICT_BOUNDS.maxX - DISTRICT_BOUNDS.minX + 2} ${DISTRICT_BOUNDS.maxZ - DISTRICT_BOUNDS.minZ + 2}`,
         );
-        mapSvg.querySelector(".interior-map")!.innerHTML =
-          `<rect x="-12" y="-10" width="${expanded ? 44 : 24}" height="20" fill="#304549" stroke="#8ba39d" stroke-width=".2"/><path d="M0 -8V9M-11 0H${expanded ? 31 : 11}" stroke="#a5b4a7" stroke-width="1.5"/><path d="M-10 -6H-3M3 -6H10M-10 5H-3M4 5H8" stroke="#647e78" stroke-width="4"/><rect x="-1.5" y="-8.5" width="3" height="3" fill="#e6c278"/>${expanded ? '<path d="M13 -6H30M13 -2H30M13 6H30" stroke="#647e78" stroke-width="2"/><path d="M12.3 -7V8M12 -4H31M12 3H31" stroke="#a5b4a7" stroke-width="1"/><circle cx="13" cy="3" r=".6" fill="#e6c278"/>' : '<rect x="4" y="2.5" width="4" height="4" fill="none" stroke="#e6c278" stroke-width=".35"/>'}`;
+        mapSvg.querySelector(".interior-map")!.innerHTML = storySite
+          ? `<rect x="-12" y="-10" width="24" height="20" fill="#304549" stroke="#8ba39d" stroke-width=".2"/><path d="M0 -8V8M-10 0H10" stroke="#a5b4a7" stroke-width="1.2"/>${snapshot.places.map((place) => `<circle cx="${place.position[0]}" cy="${place.position[2]}" r=".45" fill="#8ec5bf"/>`).join("")}`
+          : `<rect x="-12" y="-10" width="${expanded ? 44 : 24}" height="20" fill="#304549" stroke="#8ba39d" stroke-width=".2"/><path d="M0 -8V9M-11 0H${expanded ? 31 : 11}" stroke="#a5b4a7" stroke-width="1.5"/><path d="M-10 -6H-3M3 -6H10M-10 5H-3M4 5H8" stroke="#647e78" stroke-width="4"/><rect x="-1.5" y="-8.5" width="3" height="3" fill="#e6c278"/>${expanded ? '<path d="M13 -6H30M13 -2H30M13 6H30" stroke="#647e78" stroke-width="2"/><path d="M12.3 -7V8M12 -4H31M12 3H31" stroke="#a5b4a7" stroke-width="1"/><circle cx="13" cy="3" r=".6" fill="#e6c278"/>' : '<rect x="4" y="2.5" width="4" height="4" fill="none" stroke="#e6c278" stroke-width=".35"/>'}`;
       }
       const active = s.activeJob;
-      const destination = indoors
-        ? snapshot.places.find(
-            (location) =>
-              location.id ===
-              (snapshot.floor === 0
-                ? active
-                  ? "habitat-exit"
-                  : "elevator"
-                : snapshot.floor === 3 && !active
-                  ? "home"
-                  : "elevator"),
-          )
-        : active
-          ? landmark(
-              active.stage === "pickup"
-                ? "parcel-depot"
-                : JOBS[active.id].destination,
-            )
-          : landmark(
-              s.hours === 0 || s.keyFrozen ? "habitat-entry" : "work-terminal",
-            );
+      const destination = snapshot.destination;
+      const storyStep = s.investigation.tracking
+        ? nextInvestigationStep(s)
+        : undefined;
+      const storyGoal = storyStep
+        ? INVESTIGATION_ACTIONS[storyStep]
+        : undefined;
+      mapGoal.setAttribute("visibility", destination ? "visible" : "hidden");
+      objectiveButton.dataset.command = handsetButton.dataset.command =
+        storyGoal ? "investigation" : "work";
+      objectiveButton.setAttribute(
+        "aria-label",
+        storyGoal ? "Open investigation casefile" : "Open work handset",
+      );
       mapGoal.setAttribute("cx", String(destination?.position[0] ?? 0));
       mapGoal.setAttribute("cy", String(destination?.position[2] ?? -7));
       compass.hidden =
-        !active || !destination || snapshot.riding || Boolean(custody);
+        (!active && !storyGoal) ||
+        !destination ||
+        snapshot.riding ||
+        Boolean(custody);
       if (!compass.hidden && destination) {
         const dx = destination.position[0] - snapshot.x;
         const dy = destination.position[1] - snapshot.y;
@@ -618,43 +724,55 @@ export function createUI(
         compass.setAttribute("aria-label", `Direction to ${destination.name}`);
         compass.title = destination.name;
       }
-      const title = s.keyFrozen
-        ? "Recognition revoked."
-        : active
-          ? JOBS[active.id].name
-          : s.hours === 0
-            ? "Return to your room."
-            : "Earn the right to stay.";
+      const title = storyGoal
+        ? storyGoal.title
+        : s.keyFrozen
+          ? "Recognition revoked."
+          : active
+            ? JOBS[active.id].name
+            : s.hours === 0
+              ? "Return to your room."
+              : "Earn the right to stay.";
       if (objectiveTitle.textContent !== title)
         objectiveTitle.textContent = title;
-      objectiveLabel.textContent = active
-        ? "ACTIVE ASSIGNMENT"
-        : s.hours === 0
-          ? "SHIFT ALLOCATION EXHAUSTED"
-          : s.keyFrozen
-            ? "ISSUER ENFORCEMENT"
-            : "TODAY'S PRIORITY";
-      objectiveDetail.textContent = active
-        ? `${active.stage === "pickup" ? "COLLECT" : "DELIVER"} / ${indoors ? "Return outside via the ground-floor lobby" : `${destination!.name} · ${Math.round(Math.hypot(snapshot.x - destination!.position[0], snapshot.z - destination!.position[2]))} m`}`
-        : s.keyFrozen
-          ? "Your funds are frozen. Your capsule on level 03 remains reachable."
+      objectiveLabel.textContent = storyGoal
+        ? `UNDER THE COMPACT / ${s.investigation.tokens} GHOST ${s.investigation.tokens === 1 ? "TOKEN" : "TOKENS"}`
+        : active
+          ? "ACTIVE ASSIGNMENT"
           : s.hours === 0
-            ? indoors
-              ? "Settle at berth 0806 on level 03."
-              : "Enter Habitat 09. Take the lift to level 03."
-            : indoors
-              ? snapshot.floor === 3
-                ? "Your berth is 0806. Arrange your things. The license is still due."
-                : "Explore the block. Your berth is on level 03."
-              : "40 for housing. 6 for a meal. Visit your capsule in Habitat 09.";
+            ? "SHIFT ALLOCATION EXHAUSTED"
+            : s.keyFrozen
+              ? "ISSUER ENFORCEMENT"
+              : "TODAY'S PRIORITY";
+      objectiveDetail.textContent = snapshot.riding
+        ? storySite
+          ? `Deep lift in transit · ${snapshot.depth.toFixed(1)} m below street.`
+          : "Passenger lift in transit."
+        : storyGoal || active
+          ? destination
+            ? `${destination.name} · ${Math.round(Math.hypot(snapshot.x - destination.position[0], snapshot.z - destination.position[2]))} m · E to interact`
+            : "Continue after processing. Your records and access are kept."
+          : storySite
+            ? `Use ${destination?.name ?? "the service exit"} to return to the workday.`
+            : s.keyFrozen
+              ? "Your funds are frozen. Your capsule on level 03 remains reachable."
+              : s.hours === 0
+                ? inHabitat
+                  ? "Settle at berth 0806 on level 03."
+                  : "Enter Habitat 09. Take the lift to level 03."
+                : inHabitat
+                  ? snapshot.floor === 3
+                    ? "Your berth is 0806. Arrange your things. The license is still due."
+                    : "Explore the block. Your berth is on level 03."
+                  : "40 for housing. 6 for a meal. Visit your capsule in Habitat 09.";
       prompt.hidden =
         !nearest || this.paused || snapshot.riding || Boolean(custody);
       if (
         nearest &&
         prompt.dataset.place !==
-          `${snapshot.area}:${snapshot.floor}:${nearest.id}`
+          `${snapshot.area}:${storySite ?? snapshot.floor}:${nearest.id}`
       ) {
-        prompt.dataset.place = `${snapshot.area}:${snapshot.floor}:${nearest.id}`;
+        prompt.dataset.place = `${snapshot.area}:${storySite ?? snapshot.floor}:${nearest.id}`;
         prompt.innerHTML = `<kbd>E</kbd><div><small>${nearest.sector}</small><strong>${nearest.name}</strong></div><span>INTERACT ↗</span>`;
       }
       exposure.hidden = s.exposureSeconds <= 0 || s.phase !== "playing";
